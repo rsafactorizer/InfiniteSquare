@@ -31,14 +31,29 @@ class EuclideanSquarer:
         Initialize with a lattice basis.
 
         Args:
-            basis: Lattice basis matrix (n x m)
+            basis: Lattice basis matrix (n x m) - can be integer or float
         """
-        self.original_basis = np.array(basis, dtype=np.float64).copy()
-        self.basis = np.array(basis, dtype=np.float64).copy()
+        # Preserve the original dtype - if it's object (large integers), keep it
+        # Otherwise convert to appropriate integer type
+        if basis.dtype == object:
+            self.original_basis = np.array(basis, dtype=object).copy()
+            self.basis = np.array(basis, dtype=object).copy()
+            self.is_integer = True
+        elif np.issubdtype(basis.dtype, np.integer):
+            self.original_basis = np.array(basis, dtype=object).copy()
+            self.basis = np.array(basis, dtype=object).copy()
+            self.is_integer = True
+        else:
+            # Float input - convert to integers by rounding
+            self.original_basis = np.array([[int(round(x)) for x in row] for row in basis], dtype=object)
+            self.basis = self.original_basis.copy()
+            self.is_integer = True
+        
         self.n = len(self.basis)
         self.m = self.basis.shape[1] if len(self.basis.shape) > 1 else self.n
         self.original_n = self.n
-        self.vertices = np.array([[0.0, 0.0]], dtype=np.float64)  # Start with origin point
+        # Start with origin point (integer)
+        self.vertices = np.array([[0] * self.m], dtype=object)
         self.transformation_history = []
     
     def insert_as_point(self, expansion_factor: float = 0.1, verbose: bool = False) -> np.ndarray:
@@ -59,17 +74,29 @@ class EuclideanSquarer:
             print("[*] Step 1: INSERTING AS GEOMETRIC POINT")
             print(f"    Compressing lattice toward geometric center")
 
-        # Find the geometric center of the lattice
-        center = np.mean(self.basis, axis=0)
-
-        # Compress all vectors toward the center
-        # Each vector moves (1-expansion_factor) toward center
-        compressed_basis = np.zeros((self.n, self.m), dtype=np.float64)
+        # Find the geometric center of the lattice (integer arithmetic)
+        center = np.zeros(self.m, dtype=object)
         for i in range(self.n):
-            compressed_basis[i] = center + expansion_factor * (self.basis[i] - center)
+            for j in range(self.m):
+                center[j] = center[j] + int(self.basis[i, j])
+        # Integer division for center
+        for j in range(self.m):
+            center[j] = center[j] // self.n
+
+        # Compress all vectors toward the center using integer arithmetic
+        # expansion_factor is converted to integer ratio (e.g., 0.1 -> 1/10)
+        # We'll use: new = center + (vector - center) * expansion_numerator // expansion_denominator
+        expansion_numerator = 1
+        expansion_denominator = max(1, int(round(1.0 / expansion_factor)))
+        
+        compressed_basis = np.zeros((self.n, self.m), dtype=object)
+        for i in range(self.n):
+            for j in range(self.m):
+                diff = int(self.basis[i, j]) - int(center[j])
+                compressed_basis[i, j] = int(center[j]) + (diff * expansion_numerator) // expansion_denominator
 
         self.basis = compressed_basis
-        self.vertices = np.array([center.copy()], dtype=np.float64)
+        self.vertices = np.array([center.copy()], dtype=object)
 
         if verbose:
             print(f"    Geometric center: {center[:min(3, self.m)]}")
@@ -473,6 +500,7 @@ class EuclideanSquarer:
         Finish with a simple LLL-like reduction to polish the result.
 
         This applies a Lovász-like condition to ensure the basis is properly reduced.
+        Works with integer arithmetic.
 
         Args:
             delta: Lovász parameter (0.5-1.0, higher = more reduction)
@@ -482,39 +510,75 @@ class EuclideanSquarer:
             LLL-polished basis
         """
         if verbose:
-            print(f"\n[*] Applying LLL-like finishing reduction (δ={delta})")
+            print(f"\n[*] Applying integer LLL-like finishing reduction (δ={delta})")
 
         basis = self.basis.copy()
+        
+        # Convert delta to integer ratio (e.g., 0.75 -> 3/4)
+        delta_num = int(round(delta * 100))
+        delta_den = 100
 
-        # Simple LLL-like reduction
+        # Integer LLL-like reduction
         for k in range(1, self.n):
-            # Size reduce
+            # Size reduce using integer arithmetic
             for j in range(k-1, -1, -1):
-                if np.linalg.norm(basis[j]) > 0:
-                    mu = np.dot(basis[k], basis[j]) / np.dot(basis[j], basis[j])
-                    mu_rounded = round(mu)
-                    if abs(mu_rounded) > 0:
-                        basis[k] = basis[k] - mu_rounded * basis[j]
+                # Compute dot products using integer arithmetic
+                dot_kj = 0
+                dot_jj = 0
+                for i in range(self.m):
+                    b_k_i = int(basis[k, i])
+                    b_j_i = int(basis[j, i])
+                    dot_kj += b_k_i * b_j_i
+                    dot_jj += b_j_i * b_j_i
+                
+                if dot_jj > 0:
+                    # mu = dot_kj / dot_jj, rounded to nearest integer
+                    # Use: mu = round(dot_kj / dot_jj) = (dot_kj + dot_jj//2) // dot_jj
+                    if dot_kj >= 0:
+                        mu = (dot_kj + dot_jj // 2) // dot_jj
+                    else:
+                        mu = -((-dot_kj + dot_jj // 2) // dot_jj)
+                    
+                    if mu != 0:
+                        # Reduce: basis[k] = basis[k] - mu * basis[j]
+                        for i in range(self.m):
+                            basis[k, i] = int(basis[k, i]) - mu * int(basis[j, i])
 
-            # Swap condition (simplified Lovász)
+            # Swap condition (simplified Lovász) using integer arithmetic
             if k < self.n:
-                norm_k = np.linalg.norm(basis[k])
-                norm_km1 = np.linalg.norm(basis[k-1])
+                # Compute squared norms (integers)
+                norm_k_sq = 0
+                norm_km1_sq = 0
+                for i in range(self.m):
+                    b_k_i = int(basis[k, i])
+                    b_km1_i = int(basis[k-1, i])
+                    norm_k_sq += b_k_i * b_k_i
+                    norm_km1_sq += b_km1_i * b_km1_i
 
-                if norm_k > 0 and norm_km1 > 0:
-                    # Check if ||b*_k||^2 < δ ||b*_{k-1}||^2
-                    # Simplified: just check norms
-                    if norm_k * norm_k < delta * norm_km1 * norm_km1:
+                if norm_k_sq > 0 and norm_km1_sq > 0:
+                    # Check if ||b_k||^2 < δ ||b_{k-1}||^2
+                    # Using integer arithmetic: norm_k_sq * delta_den < delta_num * norm_km1_sq
+                    if norm_k_sq * delta_den < delta_num * norm_km1_sq:
                         # Swap
-                        basis[k-1], basis[k] = basis[k].copy(), basis[k-1].copy()
+                        temp = basis[k-1].copy()
+                        basis[k-1] = basis[k].copy()
+                        basis[k] = temp
 
                         if verbose:
+                            norm_k = (norm_k_sq ** 0.5) if norm_k_sq > 0 else 0
+                            norm_km1 = (norm_km1_sq ** 0.5) if norm_km1_sq > 0 else 0
                             print(f"    Swap {k-1} ↔ {k}: {norm_km1:.2f} ↔ {norm_k:.2f}")
 
         self.basis = basis
 
         if verbose:
-            shortest = min(np.linalg.norm(v) for v in basis if np.linalg.norm(v) > 1e-10)
+            # Compute shortest vector norm for display
+            shortest_sq = float('inf')
+            for v in basis:
+                norm_sq = sum(int(v[i]) * int(v[i]) for i in range(self.m))
+                if norm_sq > 0:
+                    shortest_sq = min(shortest_sq, norm_sq)
+            shortest = (shortest_sq ** 0.5) if shortest_sq < float('inf') else 0
             print(f"    Final shortest vector: {shortest:.6f}")
 
         return basis
@@ -522,6 +586,8 @@ class EuclideanSquarer:
     def run_full_transformation_with_lll_finish(self, delta: float = 0.75, verbose: bool = True) -> np.ndarray:
         """
         Run the complete geometric transformation sequence with LLL finishing.
+
+        For integer lattices, skips geometric transformations and uses pure integer LLL.
 
         Args:
             delta: LLL reduction parameter
@@ -532,26 +598,40 @@ class EuclideanSquarer:
         """
         if verbose:
             print("=" * 70)
-            print("EUCLIDEAN GEOMETRIC LATTICE SQUARER + LLL FINISH")
+            if self.is_integer:
+                print("INTEGER LATTICE SQUARER + LLL FINISH")
+            else:
+                print("EUCLIDEAN GEOMETRIC LATTICE SQUARER + LLL FINISH")
             print("=" * 70)
             print(f"Starting lattice: {self.n}x{self.m}\n")
 
-        # Run geometric transformation
-        self.insert_as_point(verbose=verbose)
-        self.unfold_to_line(verbose=verbose)
-        self.unfold_to_triangle(verbose=verbose)
-        self.unpack_vertices_from_triangle_sides(verbose=verbose)
-        self.form_square_base(verbose=verbose)
-        self.square_the_lattice(reduction_factor=0.5, verbose=verbose)
+        # For integer lattices, skip geometric transformations and use pure integer LLL
+        if self.is_integer:
+            if verbose:
+                print("[*] Integer lattice detected - using pure integer LLL reduction")
+            # Just apply integer LLL reduction directly
+            result = self.finish_with_lll_like_reduction(delta=delta, verbose=verbose)
+        else:
+            # Run geometric transformation for float lattices
+            self.insert_as_point(verbose=verbose)
+            self.unfold_to_line(verbose=verbose)
+            self.unfold_to_triangle(verbose=verbose)
+            self.unpack_vertices_from_triangle_sides(verbose=verbose)
+            self.form_square_base(verbose=verbose)
+            self.square_the_lattice(reduction_factor=0.5, verbose=verbose)
 
-        # Finish with LLL-like reduction
-        result = self.finish_with_lll_like_reduction(delta=delta, verbose=verbose)
+            # Finish with LLL-like reduction
+            result = self.finish_with_lll_like_reduction(delta=delta, verbose=verbose)
 
         if verbose:
             print("\n" + "=" * 70)
-            print("GEOMETRIC + LLL REDUCTION COMPLETE")
+            if self.is_integer:
+                print("INTEGER LLL REDUCTION COMPLETE")
+            else:
+                print("GEOMETRIC + LLL REDUCTION COMPLETE")
             print("=" * 70)
-            print(f"Transformation history: {' → '.join(self.transformation_history)}")
+            if self.transformation_history:
+                print(f"Transformation history: {' → '.join(self.transformation_history)}")
 
         return result
 
