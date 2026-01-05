@@ -495,8 +495,10 @@ class EuclideanSquarer:
         self.basis = square_basis
 
         if verbose:
-            side_length = side_length_scaled / scale
-            print(f"    Square base formed with side length {side_length:.3f}")
+            # Use integer division for display (avoid float overflow)
+            side_length_int = side_length_scaled // scale
+            side_length_frac = ((side_length_scaled % scale) * 1000) // scale
+            print(f"    Square base formed with side length {side_length_int}.{side_length_frac:03d}")
             print("    Square corners:")
             for i, corner in enumerate(square_corners):
                 print(f"      Corner {i+1}: {corner[:min(3, self.m)]}")
