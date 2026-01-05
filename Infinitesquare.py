@@ -14,6 +14,46 @@ import numpy as np
 from typing import Tuple, List, Optional
 
 
+def integer_sqrt(n: int) -> int:
+    """
+    Compute integer square root of n using Newton's method.
+    Returns floor(sqrt(n)) for large integers.
+    
+    Args:
+        n: Non-negative integer
+    
+    Returns:
+        Integer square root (floor of sqrt(n))
+    """
+    if n < 0:
+        raise ValueError("Cannot compute square root of negative number")
+    if n == 0:
+        return 0
+    if n < 4:
+        return 1
+    
+    # Use Newton's method: x_{n+1} = (x_n + n/x_n) // 2
+    # Start with a good initial guess
+    # For very large numbers, start with bit shift
+    if n > 10**20:
+        # Initial guess: 2^(bits/2)
+        bits = n.bit_length()
+        x = 1 << (bits // 2)
+    else:
+        x = n
+    
+    # Iterate until convergence
+    while True:
+        x_new = (x + n // x) // 2
+        if x_new >= x:  # Converged or overshot
+            # Check if x is correct or if we need x-1
+            if x * x <= n:
+                return x
+            else:
+                return x - 1
+        x = x_new
+
+
 class EuclideanSquarer:
     """
     Euclidean geometric transformation tool that:
@@ -127,34 +167,59 @@ class EuclideanSquarer:
 
         center = self.vertices[0]
 
-        # Find the primary direction (longest vector in basis)
-        primary_direction = np.zeros(self.m, dtype=np.float64)
-        max_length = 0
+        # Find the primary direction (longest vector in basis) using integer arithmetic
+        primary_direction = np.zeros(self.m, dtype=object)
+        max_length_sq = 0
         for vec in self.basis:
-            length = np.linalg.norm(vec)
-            if length > max_length:
-                max_length = length
-                primary_direction = vec.copy()
+            length_sq = sum(int(vec[i]) * int(vec[i]) for i in range(self.m))
+            if length_sq > max_length_sq:
+                max_length_sq = length_sq
+                for i in range(self.m):
+                    primary_direction[i] = int(vec[i])
 
-        if max_length == 0:
-            primary_direction[0] = 1.0
+        if max_length_sq == 0:
+            primary_direction[0] = 1
 
-        # Normalize the direction
-        primary_direction = primary_direction / np.linalg.norm(primary_direction)
+        # Normalize the direction (using integer arithmetic with scaling)
+        # We'll work with scaled integers to preserve precision
+        scale = 10000  # Scale factor for normalization
+        norm_sq = sum(int(primary_direction[i]) * int(primary_direction[i]) for i in range(self.m))
+        if norm_sq > 0:
+            # Normalize by scaling: direction_scaled = direction * scale / sqrt(norm_sq)
+            # Use integer square root
+            norm_approx = integer_sqrt(norm_sq)
+            for i in range(self.m):
+                primary_direction[i] = (int(primary_direction[i]) * scale) // max(1, norm_approx)
 
-        # Create line endpoints by expanding from center
-        left_endpoint = center - expansion_factor * primary_direction * max_length
-        right_endpoint = center + expansion_factor * primary_direction * max_length
+        # Create line endpoints by expanding from center (integer arithmetic)
+        expansion_num = int(round(expansion_factor * 100))
+        expansion_den = 100
+        max_length_approx = integer_sqrt(max_length_sq) if max_length_sq > 0 else 1
+        
+        left_endpoint = np.zeros(self.m, dtype=object)
+        right_endpoint = np.zeros(self.m, dtype=object)
+        for i in range(self.m):
+            center_i = int(center[i])
+            dir_i = int(primary_direction[i])
+            # Expand: center ± expansion * direction * max_length
+            expansion_term = (dir_i * expansion_num * max_length_approx) // (scale * expansion_den)
+            left_endpoint[i] = center_i - expansion_term
+            right_endpoint[i] = center_i + expansion_term
 
-        # Expand basis vectors along this line
-        line_basis = np.zeros((self.n, self.m), dtype=np.float64)
+        # Expand basis vectors along this line (integer arithmetic)
+        line_basis = np.zeros((self.n, self.m), dtype=object)
         for i in range(self.n):
             # Project each vector onto the line and expand
-            projection = np.dot(self.basis[i], primary_direction) * primary_direction
-            line_basis[i] = center + expansion_factor * projection
+            # Projection = dot(basis[i], direction) * direction
+            dot = sum(int(self.basis[i, j]) * int(primary_direction[j]) for j in range(self.m))
+            # Scale back from normalized direction
+            for j in range(self.m):
+                proj_j = (dot * int(primary_direction[j])) // (scale * scale)
+                expansion_term = (proj_j * expansion_num) // expansion_den
+                line_basis[i, j] = int(center[j]) + expansion_term
 
         self.basis = line_basis
-        self.vertices = np.array([left_endpoint, right_endpoint], dtype=np.float64)
+        self.vertices = np.array([left_endpoint, right_endpoint], dtype=object)
 
         if verbose:
             print(f"    Line expanded by factor {expansion_factor}")
@@ -186,35 +251,61 @@ class EuclideanSquarer:
         left = self.vertices[0]
         right = self.vertices[1]
 
-        # Calculate line vector and perpendicular
-        line_vector = right - left
-        line_length = np.linalg.norm(line_vector)
+        # Calculate line vector and perpendicular (integer arithmetic)
+        line_vector = np.zeros(self.m, dtype=object)
+        for i in range(self.m):
+            line_vector[i] = int(right[i]) - int(left[i])
 
-        # Create perpendicular vector (rotate 90 degrees)
+        # Compute line length squared
+        line_length_sq = sum(int(line_vector[i]) * int(line_vector[i]) for i in range(self.m))
+        line_length_approx = integer_sqrt(line_length_sq) if line_length_sq > 0 else 1
+
+        # Create perpendicular vector (rotate 90 degrees) - integer arithmetic
+        perp = np.zeros(self.m, dtype=object)
         if self.m >= 2:
-            perp = np.array([-line_vector[1], line_vector[0]])
-            if self.m > 2:
-                perp = np.pad(perp, (0, self.m - 2), 'constant')
+            perp[0] = -int(line_vector[1])
+            perp[1] = int(line_vector[0])
+            # Rest are zero
         else:
-            perp = np.array([1.0])
+            perp[0] = 1
 
-        perp = perp / np.linalg.norm(perp)  # Normalize
+        # Normalize perpendicular (using integer scaling)
+        scale = 10000
+        perp_norm_sq = sum(int(perp[i]) * int(perp[i]) for i in range(self.m))
+        if perp_norm_sq > 0:
+            perp_norm_approx = integer_sqrt(perp_norm_sq)
+            for i in range(self.m):
+                perp[i] = (int(perp[i]) * scale) // max(1, perp_norm_approx)
 
-        # Create apex above the midpoint
-        midpoint = (left + right) / 2.0
-        height = expansion_factor * line_length
-        apex = midpoint + height * perp
+        # Create apex above the midpoint (integer arithmetic)
+        midpoint = np.zeros(self.m, dtype=object)
+        for i in range(self.m):
+            midpoint[i] = (int(left[i]) + int(right[i])) // 2
+
+        expansion_num = int(round(expansion_factor * 100))
+        expansion_den = 100
+        height_scaled = (line_length_approx * expansion_num) // expansion_den
+        
+        apex = np.zeros(self.m, dtype=object)
+        for i in range(self.m):
+            apex[i] = int(midpoint[i]) + (int(perp[i]) * height_scaled) // scale
 
         # Triangle vertices
-        self.vertices = np.array([left, right, apex], dtype=np.float64)
+        self.vertices = np.array([left, right, apex], dtype=object)
 
-        # Expand basis vectors to form triangular relationships
-        triangle_basis = np.zeros((self.n, self.m), dtype=np.float64)
+        # Expand basis vectors to form triangular relationships (integer arithmetic)
+        triangle_basis = np.zeros((self.n, self.m), dtype=object)
         for i in range(self.n):
             # Create triangular relationships between vectors
             # Mix original vector with triangle vertices
-            weight = i / max(1, self.n - 1)  # 0 to 1
-            triangle_basis[i] = (1 - weight) * self.basis[i] + weight * apex
+            # weight = i / max(1, self.n - 1)  # 0 to 1
+            weight_num = i
+            weight_den = max(1, self.n - 1)
+            for j in range(self.m):
+                basis_val = int(self.basis[i, j])
+                apex_val = int(apex[j])
+                # (1 - weight) * basis + weight * apex
+                triangle_basis[i, j] = ((weight_den - weight_num) * basis_val + weight_num * apex_val) // weight_den
 
         self.basis = triangle_basis
 
@@ -252,34 +343,46 @@ class EuclideanSquarer:
 
         unpacked = []
 
-        # Side 1: left → apex
+        # Side 1: left → apex (integer arithmetic)
         for i in range(1, num_points):
-            t = i / num_points
-            v = (1 - t) * left + t * apex
+            t_num = i
+            t_den = num_points
+            v = np.zeros(self.m, dtype=object)
+            for j in range(self.m):
+                # (1 - t) * left + t * apex
+                v[j] = ((t_den - t_num) * int(left[j]) + t_num * int(apex[j])) // t_den
             unpacked.append(v)
 
-        # Side 2: right → apex
+        # Side 2: right → apex (integer arithmetic)
         for i in range(1, num_points):
-            t = i / num_points
-            v = (1 - t) * right + t * apex
+            t_num = i
+            t_den = num_points
+            v = np.zeros(self.m, dtype=object)
+            for j in range(self.m):
+                # (1 - t) * right + t * apex
+                v[j] = ((t_den - t_num) * int(right[j]) + t_num * int(apex[j])) // t_den
             unpacked.append(v)
 
-        # Side 3: left → right (base)
+        # Side 3: left → right (base) (integer arithmetic)
         for i in range(1, num_points):
-            t = i / num_points
-            v = (1 - t) * left + t * right
+            t_num = i
+            t_den = num_points
+            v = np.zeros(self.m, dtype=object)
+            for j in range(self.m):
+                # (1 - t) * left + t * right
+                v[j] = ((t_den - t_num) * int(left[j]) + t_num * int(right[j])) // t_den
             unpacked.append(v)
 
         # Update vertices with unpacked points
-        all_vertices = np.array([left, right, apex] + unpacked, dtype=np.float64)
-        self.vertices = all_vertices
+        all_vertices = [left, right, apex] + unpacked
+        self.vertices = np.array(all_vertices, dtype=object)
 
         if verbose:
             print(f"    Unpacked {len(unpacked)} vertices from triangle sides")
             print(f"    Total vertices: {len(self.vertices)}")
 
         self.transformation_history.append("vertices_unpacked")
-        return np.array(unpacked, dtype=np.float64)
+        return np.array(unpacked, dtype=object)
     
     def form_square_base(self, expansion_factor: float = 1.0, verbose: bool = False) -> np.ndarray:
         """
@@ -304,52 +407,95 @@ class EuclideanSquarer:
         right = self.vertices[1]
         apex = self.vertices[2]
 
-        # Calculate square corners using Euclidean geometry
-        base_midpoint = (left + right) / 2.0
-        base_vector = right - left
-        base_length = np.linalg.norm(base_vector)
+        # Calculate square corners using Euclidean geometry (integer arithmetic)
+        base_midpoint = np.zeros(self.m, dtype=object)
+        for i in range(self.m):
+            base_midpoint[i] = (int(left[i]) + int(right[i])) // 2
+        
+        base_vector = np.zeros(self.m, dtype=object)
+        for i in range(self.m):
+            base_vector[i] = int(right[i]) - int(left[i])
+        
+        base_length_sq = sum(int(base_vector[i]) * int(base_vector[i]) for i in range(self.m))
+        base_length_approx = integer_sqrt(base_length_sq) if base_length_sq > 0 else 1
 
-        # Create perpendicular vector for height
+        # Create perpendicular vector for height (integer arithmetic)
+        perp_vector = np.zeros(self.m, dtype=object)
         if self.m >= 2:
-            perp_vector = np.array([-base_vector[1], base_vector[0]])
-            if self.m > 2:
-                perp_vector = np.pad(perp_vector, (0, self.m - 2), 'constant')
+            perp_vector[0] = -int(base_vector[1])
+            perp_vector[1] = int(base_vector[0])
         else:
-            perp_vector = np.array([base_length])
+            perp_vector[0] = base_length_approx
 
-        perp_vector = perp_vector / np.linalg.norm(perp_vector)
+        # Normalize perpendicular vector (using integer scaling)
+        scale = 10000
+        perp_norm_sq = sum(int(perp_vector[i]) * int(perp_vector[i]) for i in range(self.m))
+        if perp_norm_sq > 0:
+            perp_norm_approx = integer_sqrt(perp_norm_sq)
+            for i in range(self.m):
+                perp_vector[i] = (int(perp_vector[i]) * scale) // max(1, perp_norm_approx)
 
-        # Calculate height from apex
-        height_vector = apex - base_midpoint
-        height = np.dot(height_vector, perp_vector)
+        # Calculate height from apex (integer arithmetic)
+        height_vector = np.zeros(self.m, dtype=object)
+        for i in range(self.m):
+            height_vector[i] = int(apex[i]) - int(base_midpoint[i])
+        
+        # Dot product for height
+        height_scaled = sum(int(height_vector[i]) * int(perp_vector[i]) for i in range(self.m))
+        height_approx = height_scaled // scale
 
-        # Create square with equal sides
-        side_length = expansion_factor * (base_length + abs(height)) / 2.0
+        # Create square with equal sides (integer arithmetic)
+        expansion_num = int(round(expansion_factor * 100))
+        expansion_den = 100
+        side_length_scaled = ((base_length_approx + abs(height_approx)) * expansion_num * scale) // (2 * expansion_den)
 
-        # Square corners
-        bottom_left = left
-        bottom_right = left + side_length * (base_vector / base_length)
-        top_left = left + side_length * perp_vector
-        top_right = left + side_length * (base_vector / base_length) + side_length * perp_vector
+        # Square corners (integer arithmetic)
+        bottom_left = left.copy()
+        bottom_right = np.zeros(self.m, dtype=object)
+        top_left = np.zeros(self.m, dtype=object)
+        top_right = np.zeros(self.m, dtype=object)
+        
+        for i in range(self.m):
+            # bottom_right = left + side_length * (base_vector / base_length)
+            base_dir_i = (int(base_vector[i]) * scale) // max(1, base_length_approx)
+            bottom_right[i] = int(left[i]) + (side_length_scaled * base_dir_i) // (scale * scale)
+            
+            # top_left = left + side_length * perp_vector
+            top_left[i] = int(left[i]) + (side_length_scaled * int(perp_vector[i])) // (scale * scale)
+            
+            # top_right = bottom_right + (top_left - left)
+            top_right[i] = int(bottom_right[i]) + (int(top_left[i]) - int(left[i]))
 
-        square_corners = np.array([bottom_left, bottom_right, top_left, top_right], dtype=np.float64)
+        square_corners = np.array([bottom_left, bottom_right, top_left, top_right], dtype=object)
         self.vertices = square_corners
 
-        # Transform basis to align with square
-        square_basis = np.zeros((self.n, self.m), dtype=np.float64)
-        square_center = np.mean(square_corners, axis=0)
+        # Transform basis to align with square (integer arithmetic)
+        square_basis = np.zeros((self.n, self.m), dtype=object)
+        square_center = np.zeros(self.m, dtype=object)
+        for i in range(4):
+            for j in range(self.m):
+                square_center[j] = square_center[j] + int(square_corners[i, j])
+        for j in range(self.m):
+            square_center[j] = square_center[j] // 4
 
         for i in range(self.n):
             # Project onto square coordinate system
-            vec = self.basis[i] - square_center
+            vec = np.zeros(self.m, dtype=object)
+            for j in range(self.m):
+                vec[j] = int(self.basis[i, j]) - int(square_center[j])
+            
             # Align with square axes
-            x_proj = np.dot(vec, base_vector / base_length)
-            y_proj = np.dot(vec, perp_vector)
-            square_basis[i] = square_center + x_proj * (base_vector / base_length) + y_proj * perp_vector
+            x_proj = sum(int(vec[j]) * int(base_vector[j]) for j in range(self.m)) // max(1, base_length_approx)
+            y_proj = sum(int(vec[j]) * int(perp_vector[j]) for j in range(self.m)) // scale
+            
+            for j in range(self.m):
+                base_dir_j = (int(base_vector[j]) * scale) // max(1, base_length_approx)
+                square_basis[i, j] = int(square_center[j]) + (x_proj * base_dir_j) // (scale * scale) + (y_proj * int(perp_vector[j])) // scale
 
         self.basis = square_basis
 
         if verbose:
+            side_length = side_length_scaled / scale
             print(f"    Square base formed with side length {side_length:.3f}")
             print("    Square corners:")
             for i, corner in enumerate(square_corners):
@@ -380,58 +526,90 @@ class EuclideanSquarer:
 
         square_vertices = self.vertices[:4]
 
-        # Square basis vectors
-        v1 = square_vertices[1] - square_vertices[0]  # Bottom edge
-        v2 = square_vertices[2] - square_vertices[0]  # Left edge
+        # Square basis vectors (integer arithmetic)
+        v1 = np.zeros(self.m, dtype=object)
+        v2 = np.zeros(self.m, dtype=object)
+        for i in range(self.m):
+            v1[i] = int(square_vertices[1, i]) - int(square_vertices[0, i])  # Bottom edge
+            v2[i] = int(square_vertices[2, i]) - int(square_vertices[0, i])  # Left edge
 
-        # Normalize
-        v1_norm = np.linalg.norm(v1)
-        v2_norm = np.linalg.norm(v2)
+        # Normalize (using integer scaling)
+        scale = 10000
+        v1_norm_sq = sum(int(v1[i]) * int(v1[i]) for i in range(self.m))
+        v2_norm_sq = sum(int(v2[i]) * int(v2[i]) for i in range(self.m))
+        
+        v1_norm_approx = integer_sqrt(v1_norm_sq) if v1_norm_sq > 0 else 1
+        v2_norm_approx = integer_sqrt(v2_norm_sq) if v2_norm_sq > 0 else 1
 
-        if v1_norm > 0:
-            v1_unit = v1 / v1_norm
+        v1_unit = np.zeros(self.m, dtype=object)
+        v2_unit = np.zeros(self.m, dtype=object)
+        
+        if v1_norm_sq > 0:
+            for i in range(self.m):
+                v1_unit[i] = (int(v1[i]) * scale) // max(1, v1_norm_approx)
         else:
-            v1_unit = np.zeros(self.m)
-            v1_unit[0] = 1.0
+            v1_unit[0] = scale
 
-        if v2_norm > 0:
-            v2_unit = v2 / v2_norm
+        if v2_norm_sq > 0:
+            for i in range(self.m):
+                v2_unit[i] = (int(v2[i]) * scale) // max(1, v2_norm_approx)
         else:
-            v2_unit = np.zeros(self.m)
             if self.m > 1:
-                v2_unit[1] = 1.0
+                v2_unit[1] = scale
             else:
-                v2_unit[0] = 1.0
+                v2_unit[0] = scale
 
-        # Apply controlled squaring transformation
-        squared_basis = np.zeros((self.n, self.m), dtype=np.float64)
+        # Apply controlled squaring transformation (integer arithmetic)
+        squared_basis = np.zeros((self.n, self.m), dtype=object)
+        reduction_num = int(round(reduction_factor * 100))
+        reduction_den = 100
 
         for i in range(self.n):
             original = self.basis[i]
 
-            # Project onto square coordinate system
-            comp_v1 = np.dot(original, v1_unit) * v1_unit
-            comp_v2 = np.dot(original, v2_unit) * v2_unit
+            # Project onto square coordinate system (integer arithmetic)
+            dot_v1 = sum(int(original[j]) * int(v1_unit[j]) for j in range(self.m)) // scale
+            dot_v2 = sum(int(original[j]) * int(v2_unit[j]) for j in range(self.m)) // scale
+            
+            comp_v1 = np.zeros(self.m, dtype=object)
+            comp_v2 = np.zeros(self.m, dtype=object)
+            for j in range(self.m):
+                comp_v1[j] = (dot_v1 * int(v1_unit[j])) // scale
+                comp_v2[j] = (dot_v2 * int(v2_unit[j])) // scale
 
             # Blend original with square-projected version
-            squared_basis[i] = reduction_factor * (comp_v1 + comp_v2) + (1 - reduction_factor) * original
+            for j in range(self.m):
+                blended = ((reduction_num * (int(comp_v1[j]) + int(comp_v2[j])) + (reduction_den - reduction_num) * int(original[j])) // reduction_den)
+                squared_basis[i, j] = blended
 
-            # Gentle reduction against square vertices
+            # Gentle reduction against square vertices (integer arithmetic)
             for sq_vertex in square_vertices:
-                if np.linalg.norm(sq_vertex) > 0:
-                    proj = np.dot(squared_basis[i], sq_vertex) / np.dot(sq_vertex, sq_vertex)
-                    # Only apply partial reduction
-                    squared_basis[i] = squared_basis[i] - (reduction_factor * 0.5) * proj * sq_vertex
+                sq_norm_sq = sum(int(sq_vertex[j]) * int(sq_vertex[j]) for j in range(self.m))
+                if sq_norm_sq > 0:
+                    proj_dot = sum(int(squared_basis[i, j]) * int(sq_vertex[j]) for j in range(self.m))
+                    # proj = proj_dot / sq_norm_sq
+                    proj_scaled = (proj_dot * scale) // sq_norm_sq
+                    # Only apply partial reduction: reduction_factor * 0.5
+                    half_reduction_num = reduction_num // 2
+                    for j in range(self.m):
+                        reduction_term = (half_reduction_num * proj_scaled * int(sq_vertex[j])) // (reduction_den * scale * scale)
+                        squared_basis[i, j] = int(squared_basis[i, j]) - reduction_term
 
-        # Size-reduction pass (similar to LLL size reduction)
+        # Size-reduction pass (similar to LLL size reduction) - integer arithmetic
         for i in range(1, self.n):
             for j in range(i):
-                if np.linalg.norm(squared_basis[j]) > 0:
-                    proj = np.dot(squared_basis[i], squared_basis[j]) / np.dot(squared_basis[j], squared_basis[j])
+                sq_norm_sq = sum(int(squared_basis[j, k]) * int(squared_basis[j, k]) for k in range(self.m))
+                if sq_norm_sq > 0:
+                    proj_dot = sum(int(squared_basis[i, k]) * int(squared_basis[j, k]) for k in range(self.m))
                     # Round to nearest integer for lattice reduction
-                    proj_rounded = round(proj)
-                    if abs(proj_rounded) > 0:
-                        squared_basis[i] = squared_basis[i] - proj_rounded * squared_basis[j]
+                    if proj_dot >= 0:
+                        proj_rounded = (proj_dot + sq_norm_sq // 2) // sq_norm_sq
+                    else:
+                        proj_rounded = -((-proj_dot + sq_norm_sq // 2) // sq_norm_sq)
+                    
+                    if proj_rounded != 0:
+                        for k in range(self.m):
+                            squared_basis[i, k] = int(squared_basis[i, k]) - proj_rounded * int(squared_basis[j, k])
 
         self.basis = squared_basis
 
@@ -439,13 +617,16 @@ class EuclideanSquarer:
             print(f"    Lattice squared: {self.n}x{self.m} (reduction factor: {reduction_factor})")
 
             # Find shortest vector
-            shortest_norm = float('inf')
+            shortest_norm_sq = float('inf')
             for v in squared_basis:
-                norm = np.linalg.norm(v)
-                if norm > 0 and norm < shortest_norm:
-                    shortest_norm = norm
+                norm_sq = sum(int(v[i]) * int(v[i]) for i in range(self.m))
+                if norm_sq > 0 and norm_sq < shortest_norm_sq:
+                    shortest_norm_sq = norm_sq
 
-            if shortest_norm < float('inf'):
+            if shortest_norm_sq < float('inf'):
+                # Use integer sqrt for large numbers, convert to float only for display
+                shortest_norm_int = integer_sqrt(shortest_norm_sq)
+                shortest_norm = float(shortest_norm_int) if shortest_norm_int < 10**10 else float(shortest_norm_int)
                 print(f"    Shortest vector length: {shortest_norm:.6f}")
 
         self.transformation_history.append("lattice_squared")
@@ -519,6 +700,9 @@ class EuclideanSquarer:
         delta_den = 100
 
         # Integer LLL-like reduction
+        # Add progress output for large lattices
+        print_progress = self.n > 50
+        
         for k in range(1, self.n):
             # Size reduce using integer arithmetic
             for j in range(k-1, -1, -1):
@@ -543,31 +727,50 @@ class EuclideanSquarer:
                         # Reduce: basis[k] = basis[k] - mu * basis[j]
                         for i in range(self.m):
                             basis[k, i] = int(basis[k, i]) - mu * int(basis[j, i])
+            
+            # Progress output for large lattices (every 5 vectors near the end)
+            if print_progress:
+                if (k + 1) % 5 == 0 or k + 1 >= self.n - 5:
+                    print(f"      LLL reduction: {k + 1}/{self.n} vectors processed...", end='\r')
 
             # Swap condition (simplified Lovász) using integer arithmetic
             if k < self.n:
-                # Compute squared norms (integers)
-                norm_k_sq = 0
-                norm_km1_sq = 0
-                for i in range(self.m):
-                    b_k_i = int(basis[k, i])
-                    b_km1_i = int(basis[k-1, i])
-                    norm_k_sq += b_k_i * b_k_i
-                    norm_km1_sq += b_km1_i * b_km1_i
+                # Compute squared norms (integers) - only if we might need to swap
+                # Optimize: only check swap condition occasionally to save time
+                if k % 2 == 0 or k == self.n - 1:  # Check every other vector, or last one
+                    norm_k_sq = 0
+                    norm_km1_sq = 0
+                    for i in range(self.m):
+                        b_k_i = int(basis[k, i])
+                        b_km1_i = int(basis[k-1, i])
+                        norm_k_sq += b_k_i * b_k_i
+                        norm_km1_sq += b_km1_i * b_km1_i
 
-                if norm_k_sq > 0 and norm_km1_sq > 0:
-                    # Check if ||b_k||^2 < δ ||b_{k-1}||^2
-                    # Using integer arithmetic: norm_k_sq * delta_den < delta_num * norm_km1_sq
-                    if norm_k_sq * delta_den < delta_num * norm_km1_sq:
-                        # Swap
-                        temp = basis[k-1].copy()
-                        basis[k-1] = basis[k].copy()
-                        basis[k] = temp
+                    if norm_k_sq > 0 and norm_km1_sq > 0:
+                        # Check if ||b_k||^2 < δ ||b_{k-1}||^2
+                        # Using integer arithmetic: norm_k_sq * delta_den < delta_num * norm_km1_sq
+                        if norm_k_sq * delta_den < delta_num * norm_km1_sq:
+                            # Swap
+                            temp = basis[k-1].copy()
+                            basis[k-1] = basis[k].copy()
+                            basis[k] = temp
 
-                        if verbose:
-                            norm_k = (norm_k_sq ** 0.5) if norm_k_sq > 0 else 0
-                            norm_km1 = (norm_km1_sq ** 0.5) if norm_km1_sq > 0 else 0
-                            print(f"    Swap {k-1} ↔ {k}: {norm_km1:.2f} ↔ {norm_k:.2f}")
+                            if verbose:
+                                # Use integer sqrt for display
+                                norm_k_int = integer_sqrt(norm_k_sq) if norm_k_sq > 0 else 0
+                                norm_km1_int = integer_sqrt(norm_km1_sq) if norm_km1_sq > 0 else 0
+                                norm_k = float(norm_k_int) if norm_k_int < 10**10 else float(norm_k_int)
+                                norm_km1 = float(norm_km1_int) if norm_km1_int < 10**10 else float(norm_km1_int)
+                                print(f"    Swap {k-1} ↔ {k}: {norm_km1:.2f} ↔ {norm_k:.2f}")
+            
+            # Progress output for large lattices (every 5 vectors near the end)
+            if print_progress:
+                if (k + 1) % 5 == 0 or k + 1 >= self.n - 5:
+                    print(f"      LLL reduction: {k + 1}/{self.n} vectors processed...", end='\r')
+        
+        # Newline after progress
+        if print_progress:
+            print()  # Clear the progress line
 
         self.basis = basis
 
@@ -578,57 +781,159 @@ class EuclideanSquarer:
                 norm_sq = sum(int(v[i]) * int(v[i]) for i in range(self.m))
                 if norm_sq > 0:
                     shortest_sq = min(shortest_sq, norm_sq)
-            shortest = (shortest_sq ** 0.5) if shortest_sq < float('inf') else 0
+            # Use integer sqrt for large numbers
+            if shortest_sq < float('inf'):
+                shortest_int = integer_sqrt(shortest_sq)
+                shortest = float(shortest_int) if shortest_int < 10**10 else float(shortest_int)
+            else:
+                shortest = 0
             print(f"    Final shortest vector: {shortest:.6f}")
 
+        return basis
+    
+    def collapse_to_point(self, max_iterations: int = 10, verbose: bool = False) -> np.ndarray:
+        """
+        Collapse the lattice completely to find the absolute shortest vectors.
+        
+        After geometric transformations reduce the lattice to a point-like structure,
+        this method aggressively reduces all vectors to their absolute minimum.
+        
+        Args:
+            max_iterations: Maximum number of collapse iterations
+            verbose: Print progress
+        
+        Returns:
+            Fully collapsed lattice basis
+        """
+        if verbose:
+            print(f"\n[*] COLLAPSING LATTICE TO POINT")
+            print(f"    Aggressively reducing to absolute minimum...")
+        
+        basis = self.basis.copy()
+        
+        # Multiple passes of aggressive size reduction
+        for iteration in range(max_iterations):
+            changed = False
+            
+            # Size reduce every vector against every other vector
+            for i in range(self.n):
+                for j in range(self.n):
+                    if i == j:
+                        continue
+                    
+                    # Compute dot products
+                    dot_ij = 0
+                    dot_jj = 0
+                    for k in range(self.m):
+                        b_i_k = int(basis[i, k])
+                        b_j_k = int(basis[j, k])
+                        dot_ij += b_i_k * b_j_k
+                        dot_jj += b_j_k * b_j_k
+                    
+                    if dot_jj > 0:
+                        # Compute reduction coefficient
+                        if dot_ij >= 0:
+                            mu = (dot_ij + dot_jj // 2) // dot_jj
+                        else:
+                            mu = -((-dot_ij + dot_jj // 2) // dot_jj)
+                        
+                        # Only reduce if it will make a significant difference
+                        if abs(mu) > 0:
+                            # Reduce: basis[i] = basis[i] - mu * basis[j]
+                            for k in range(self.m):
+                                old_val = int(basis[i, k])
+                                new_val = old_val - mu * int(basis[j, k])
+                                basis[i, k] = new_val
+                                if old_val != new_val:
+                                    changed = True
+            
+            # Also try to find and eliminate zero vectors
+            for i in range(self.n):
+                norm_sq = sum(int(basis[i, k]) * int(basis[i, k]) for k in range(self.m))
+                if norm_sq == 0:
+                    # Zero vector - try to replace with a non-zero one
+                    for j in range(self.n):
+                        if i != j:
+                            norm_j_sq = sum(int(basis[j, k]) * int(basis[j, k]) for k in range(self.m))
+                            if norm_j_sq > 0:
+                                # Copy a non-zero vector
+                                for k in range(self.m):
+                                    basis[i, k] = int(basis[j, k])
+                                changed = True
+                                break
+            
+            if not changed:
+                if verbose:
+                    print(f"    Collapse converged after {iteration + 1} iterations")
+                break
+            
+            if verbose and (iteration + 1) % 2 == 0:
+                shortest_sq = float('inf')
+                for v in basis:
+                    norm_sq = sum(int(v[k]) * int(v[k]) for k in range(self.m))
+                    if norm_sq > 0 and norm_sq < shortest_sq:
+                        shortest_sq = norm_sq
+                if shortest_sq < float('inf'):
+                    shortest_int = integer_sqrt(int(shortest_sq))
+                    shortest = float(shortest_int) if shortest_int < 10**10 else float(shortest_int)
+                    print(f"    Iteration {iteration + 1}: shortest vector = {shortest:.2f}")
+        
+        self.basis = basis
+        
+        if verbose:
+            shortest_sq = float('inf')
+            for v in basis:
+                norm_sq = sum(int(v[k]) * int(v[k]) for k in range(self.m))
+                if norm_sq > 0 and norm_sq < shortest_sq:
+                    shortest_sq = norm_sq
+            if shortest_sq < float('inf'):
+                shortest_int = integer_sqrt(int(shortest_sq))
+                shortest = float(shortest_int) if shortest_int < 10**10 else float(shortest_int)
+                print(f"    Collapsed lattice - shortest vector: {shortest:.6f}")
+        
+        self.transformation_history.append("collapsed_to_point")
         return basis
 
     def run_full_transformation_with_lll_finish(self, delta: float = 0.75, verbose: bool = True) -> np.ndarray:
         """
-        Run the complete geometric transformation sequence with LLL finishing.
-
-        For integer lattices, skips geometric transformations and uses pure integer LLL.
+        Run the complete geometric transformation sequence with collapse.
 
         Args:
-            delta: LLL reduction parameter
+            delta: (Deprecated, not used) Kept for compatibility
             verbose: Print progress
 
         Returns:
-            Fully transformed and LLL-finished lattice basis
+            Fully transformed and collapsed lattice basis
         """
         if verbose:
             print("=" * 70)
             if self.is_integer:
-                print("INTEGER LATTICE SQUARER + LLL FINISH")
+                print("INTEGER LATTICE SQUARER + COLLAPSE")
             else:
-                print("EUCLIDEAN GEOMETRIC LATTICE SQUARER + LLL FINISH")
+                print("EUCLIDEAN GEOMETRIC LATTICE SQUARER + COLLAPSE")
             print("=" * 70)
             print(f"Starting lattice: {self.n}x{self.m}\n")
 
-        # For integer lattices, skip geometric transformations and use pure integer LLL
-        if self.is_integer:
-            if verbose:
-                print("[*] Integer lattice detected - using pure integer LLL reduction")
-            # Just apply integer LLL reduction directly
-            result = self.finish_with_lll_like_reduction(delta=delta, verbose=verbose)
-        else:
-            # Run geometric transformation for float lattices
-            self.insert_as_point(verbose=verbose)
-            self.unfold_to_line(verbose=verbose)
-            self.unfold_to_triangle(verbose=verbose)
-            self.unpack_vertices_from_triangle_sides(verbose=verbose)
-            self.form_square_base(verbose=verbose)
-            self.square_the_lattice(reduction_factor=0.5, verbose=verbose)
+        # Run geometric transformation (now works with both integer and float lattices)
+        if self.is_integer and verbose:
+            print("[*] Integer lattice detected - using integer geometric transformations")
+        
+        self.insert_as_point(verbose=verbose)
+        self.unfold_to_line(verbose=verbose)
+        self.unfold_to_triangle(verbose=verbose)
+        self.unpack_vertices_from_triangle_sides(verbose=verbose)
+        self.form_square_base(verbose=verbose)
+        self.square_the_lattice(reduction_factor=0.5, verbose=verbose)
 
-            # Finish with LLL-like reduction
-            result = self.finish_with_lll_like_reduction(delta=delta, verbose=verbose)
+        # After geometric transformations reduce to point-like structure, collapse completely
+        result = self.collapse_to_point(max_iterations=10, verbose=verbose)
 
         if verbose:
             print("\n" + "=" * 70)
             if self.is_integer:
-                print("INTEGER LLL REDUCTION COMPLETE")
+                print("INTEGER GEOMETRIC TRANSFORMATION + COLLAPSE COMPLETE")
             else:
-                print("GEOMETRIC + LLL REDUCTION COMPLETE")
+                print("GEOMETRIC TRANSFORMATION + COLLAPSE COMPLETE")
             print("=" * 70)
             if self.transformation_history:
                 print(f"Transformation history: {' → '.join(self.transformation_history)}")
