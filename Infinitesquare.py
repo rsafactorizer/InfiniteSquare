@@ -793,35 +793,126 @@ class EuclideanSquarer:
     
     def collapse_to_point(self, max_iterations: int = 10, verbose: bool = False) -> np.ndarray:
         """
-        Collapse the lattice completely to find the absolute shortest vectors.
+        Collapse the lattice using a Euclidean gravity well.
         
-        After geometric transformations reduce the lattice to a point-like structure,
-        this method aggressively reduces all vectors to their absolute minimum.
+        Creates a geometric "gravity well" at the center of the lattice and draws
+        all vectors toward it using pure Euclidean geometry (distances, angles, projections)
+        rather than algebraic calculations.
+        
+        Geometric approach:
+        1. Find the geometric center (centroid) of all vectors
+        2. For each vector, compute its Euclidean distance from center
+        3. Project the vector toward the center along the line connecting them
+        4. Scale the projection based on distance (gravity effect - closer = stronger pull)
+        5. Use geometric transformations, not algebraic reductions
         
         Args:
-            max_iterations: Maximum number of collapse iterations
+            max_iterations: Maximum number of gravity well iterations
             verbose: Print progress
         
         Returns:
             Fully collapsed lattice basis
         """
         if verbose:
-            print(f"\n[*] COLLAPSING LATTICE TO POINT")
-            print(f"    Aggressively reducing to absolute minimum...")
+            print(f"\n[*] COLLAPSING WITH EUCLIDEAN GRAVITY WELL")
+            print(f"    Drawing vectors into geometric center...")
         
         basis = self.basis.copy()
         
-        # Multiple passes of aggressive size reduction
         for iteration in range(max_iterations):
+            # === STEP 1: COMPUTE GEOMETRIC CENTER (CENTROID) ===
+            # The center is the average of all vectors - pure geometry
+            center = np.zeros(self.m, dtype=object)
+            for k in range(self.m):
+                sum_coord = 0
+                for i in range(self.n):
+                    sum_coord += int(basis[i, k])
+                center[k] = sum_coord // self.n
+            
+            # === STEP 2: FOR EACH VECTOR, COMPUTE EUCLIDEAN DISTANCE FROM CENTER ===
+            # This is the geometric distance, not algebraic
             changed = False
             
-            # Size reduce every vector against every other vector
             for i in range(self.n):
-                for j in range(self.n):
-                    if i == j:
-                        continue
+                # Compute vector from center to this point
+                vector_from_center = np.zeros(self.m, dtype=object)
+                distance_sq = 0
+                
+                for k in range(self.m):
+                    coord_diff = int(basis[i, k]) - int(center[k])
+                    vector_from_center[k] = coord_diff
+                    distance_sq += coord_diff * coord_diff
+                
+                # If vector is already at center, skip
+                if distance_sq == 0:
+                    continue
+                
+                # === STEP 3: GRAVITY WELL EFFECT ===
+                # The "gravity" pulls the vector toward center
+                # Strength is proportional to distance (further = stronger pull, but normalized)
+                # Use geometric scaling: project toward center along the line
+                
+                # Compute the direction vector (normalized direction toward center)
+                # In Euclidean geometry, we scale the vector toward center
+                # The pull strength: use distance itself as the "gravity constant"
+                distance = integer_sqrt(distance_sq)
+                
+                if distance == 0:
+                    continue
+                
+                # === STEP 4: GEOMETRIC PROJECTION TOWARD CENTER ===
+                # Instead of algebraic reduction, use geometric projection:
+                # Move the vector along the line toward center
+                # The movement is proportional to the distance (gravity effect)
+                
+                # Scale factor: pull stronger for vectors further away
+                # But we want to move gradually, so use a fraction of the distance
+                # Geometric approach: move by a proportion of the distance
+                # Use 1/4 of the distance as the "gravity step" (geometric, not calculated)
+                gravity_step = distance // 4
+                if gravity_step == 0:
+                    gravity_step = 1
+                
+                # Project: move vector toward center by gravity_step units
+                # This is pure geometry: move along the line from vector to center
+                new_vector = np.zeros(self.m, dtype=object)
+                for k in range(self.m):
+                    # Direction component
+                    direction_component = vector_from_center[k]
                     
-                    # Compute dot products
+                    # Scale by gravity step / distance (geometric scaling)
+                    # This moves us gravity_step units toward center
+                    if distance > 0:
+                        # Move: new = old - (direction * step / distance)
+                        # This is geometric: we're moving along the line
+                        movement = (direction_component * gravity_step) // distance
+                        new_coord = int(basis[i, k]) - movement
+                        new_vector[k] = new_coord
+                    else:
+                        new_vector[k] = int(basis[i, k])
+                
+                # Check if this actually moved the vector and didn't collapse to zero
+                moved = False
+                new_norm_sq = 0
+                for k in range(self.m):
+                    if int(basis[i, k]) != int(new_vector[k]):
+                        moved = True
+                    new_norm_sq += int(new_vector[k]) * int(new_vector[k])
+                
+                # Only update if vector moved and didn't collapse to zero
+                if moved and new_norm_sq > 0:
+                    # Update the vector
+                    for k in range(self.m):
+                        basis[i, k] = new_vector[k]
+                    changed = True
+            
+            # === STEP 5: GEOMETRIC ORTHOGONALIZATION ===
+            # After gravity pull, ensure vectors are geometrically independent
+            # Use geometric projections to make vectors more orthogonal
+            for i in range(self.n):
+                for j in range(i):
+                    # Compute geometric projection of basis[i] onto basis[j]
+                    # Dot product (geometric measure of alignment)
                     dot_ij = 0
                     dot_jj = 0
                     for k in range(self.m):
@@ -831,15 +922,12 @@ class EuclideanSquarer:
                         dot_jj += b_j_k * b_j_k
                     
                     if dot_jj > 0:
-                        # Compute reduction coefficient
-                        if dot_ij >= 0:
-                            mu = (dot_ij + dot_jj // 2) // dot_jj
-                        else:
-                            mu = -((-dot_ij + dot_jj // 2) // dot_jj)
+                        # Geometric projection coefficient
+                        # This is the geometric measure of how much i aligns with j
+                        mu = (dot_ij + dot_jj // 2) // dot_jj
                         
-                        # Only reduce if it will make a significant difference
                         if abs(mu) > 0:
-                            # Reduce: basis[i] = basis[i] - mu * basis[j]
+                            # Remove the projection (geometric orthogonalization)
                             for k in range(self.m):
                                 old_val = int(basis[i, k])
                                 new_val = old_val - mu * int(basis[j, k])
@@ -847,24 +935,9 @@ class EuclideanSquarer:
                                 if old_val != new_val:
                                     changed = True
             
-            # Also try to find and eliminate zero vectors
-            for i in range(self.n):
-                norm_sq = sum(int(basis[i, k]) * int(basis[i, k]) for k in range(self.m))
-                if norm_sq == 0:
-                    # Zero vector - try to replace with a non-zero one
-                    for j in range(self.n):
-                        if i != j:
-                            norm_j_sq = sum(int(basis[j, k]) * int(basis[j, k]) for k in range(self.m))
-                            if norm_j_sq > 0:
-                                # Copy a non-zero vector
-                                for k in range(self.m):
-                                    basis[i, k] = int(basis[j, k])
-                                changed = True
-                                break
-            
             if not changed:
                 if verbose:
-                    print(f"    Collapse converged after {iteration + 1} iterations")
+                    print(f"    Gravity well converged after {iteration + 1} iterations")
                 break
             
             if verbose and (iteration + 1) % 2 == 0:
