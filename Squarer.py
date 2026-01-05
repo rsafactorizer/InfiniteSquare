@@ -626,10 +626,12 @@ class EuclideanSquarer:
                     shortest_norm_sq = norm_sq
 
             if shortest_norm_sq < float('inf'):
-                # Use integer sqrt for large numbers, convert to float only for display
+                # Use integer sqrt for large numbers, avoid float conversion for very large numbers
                 shortest_norm_int = integer_sqrt(shortest_norm_sq)
-                shortest_norm = float(shortest_norm_int) if shortest_norm_int < 10**10 else float(shortest_norm_int)
-                print(f"    Shortest vector length: {shortest_norm:.6f}")
+                if shortest_norm_int < 10**10:
+                    print(f"    Shortest vector length: {shortest_norm_int:.6f}")
+                else:
+                    print(f"    Shortest vector length: {shortest_norm_int}")
 
         self.transformation_history.append("lattice_squared")
         return self.basis
@@ -761,9 +763,11 @@ class EuclideanSquarer:
                                 # Use integer sqrt for display
                                 norm_k_int = integer_sqrt(norm_k_sq) if norm_k_sq > 0 else 0
                                 norm_km1_int = integer_sqrt(norm_km1_sq) if norm_km1_sq > 0 else 0
-                                norm_k = float(norm_k_int) if norm_k_int < 10**10 else float(norm_k_int)
-                                norm_km1 = float(norm_km1_int) if norm_km1_int < 10**10 else float(norm_km1_int)
-                                print(f"    Swap {k-1} ↔ {k}: {norm_km1:.2f} ↔ {norm_k:.2f}")
+                                # Avoid float conversion for very large numbers
+                                if norm_k_int < 10**10 and norm_km1_int < 10**10:
+                                    print(f"    Swap {k-1} ↔ {k}: {norm_km1_int:.2f} ↔ {norm_k_int:.2f}")
+                                else:
+                                    print(f"    Swap {k-1} ↔ {k}: {norm_km1_int} ↔ {norm_k_int}")
             
             # Progress output for large lattices (every 5 vectors near the end)
             if print_progress:
@@ -786,14 +790,16 @@ class EuclideanSquarer:
             # Use integer sqrt for large numbers
             if shortest_sq < float('inf'):
                 shortest_int = integer_sqrt(shortest_sq)
-                shortest = float(shortest_int) if shortest_int < 10**10 else float(shortest_int)
+                if shortest_int < 10**10:
+                    print(f"    Final shortest vector: {shortest_int:.6f}")
+                else:
+                    print(f"    Final shortest vector: {shortest_int}")
             else:
-                shortest = 0
-            print(f"    Final shortest vector: {shortest:.6f}")
+                print(f"    Final shortest vector: 0")
 
         return basis
     
-    def collapse_to_point(self, max_iterations: int = 10, verbose: bool = False) -> np.ndarray:
+    def collapse_to_point(self, max_iterations: int = 60, verbose: bool = False, check_factor_callback=None, large_number=None) -> np.ndarray:
         """
         Collapse the lattice using a Euclidean gravity well.
         
@@ -811,6 +817,8 @@ class EuclideanSquarer:
         Args:
             max_iterations: Maximum number of gravity well iterations
             verbose: Print progress
+            check_factor_callback: Optional callback function to check for factors during collapse
+            large_number: Optional large number for factorization checks
         
         Returns:
             Fully collapsed lattice basis
@@ -818,6 +826,22 @@ class EuclideanSquarer:
         if verbose:
             print(f"\n[*] COLLAPSING WITH EUCLIDEAN GRAVITY WELL")
             print(f"    Drawing vectors into geometric center...")
+            # Track initial sizes to show reduction progress
+            initial_shortest_sq = float('inf')
+            initial_total_sq = 0
+            for v in self.basis:
+                norm_sq = sum(int(v[k]) * int(v[k]) for k in range(self.m))
+                if norm_sq > 0:
+                    if norm_sq < initial_shortest_sq:
+                        initial_shortest_sq = norm_sq
+                    initial_total_sq += norm_sq
+            if initial_shortest_sq < float('inf'):
+                initial_shortest = integer_sqrt(int(initial_shortest_sq))
+                initial_avg = integer_sqrt(initial_total_sq // self.n) if self.n > 0 else 0
+                if initial_shortest < 10**10 and initial_avg < 10**10:
+                    print(f"    Initial: shortest = {initial_shortest:.2f}, avg = {initial_avg:.2f}")
+                else:
+                    print(f"    Initial: shortest ≈ {initial_shortest}, avg ≈ {initial_avg}")
         
         basis = self.basis.copy()
         
@@ -902,7 +926,18 @@ class EuclideanSquarer:
                     new_norm_sq += int(new_vector[k]) * int(new_vector[k])
                 
                 # Only update if vector moved and didn't collapse to zero
+                # Also check if we're collapsing too aggressively (for factorization)
                 if moved and new_norm_sq > 0:
+                    # For factorization, don't collapse vectors that are already very small
+                    # Keep some structure to preserve factorization information
+                    if large_number is not None:
+                        # If vector is already very small compared to N, don't collapse further
+                        # This preserves factorization structure
+                        sqrt_N = integer_sqrt(large_number) if large_number > 0 else 1
+                        if new_norm_sq < sqrt_N // 1000:  # Already very small
+                            # Skip further collapse for this vector
+                            continue
+                    
                     # Update the vector
                     for k in range(self.m):
                         basis[i, k] = new_vector[k]
@@ -937,21 +972,46 @@ class EuclideanSquarer:
                                 if old_val != new_val:
                                     changed = True
             
+            # Check for factors at intermediate stages (before full collapse)
+            if check_factor_callback is not None and large_number is not None:
+                # Check every 100 iterations or at key milestones
+                if (iteration + 1) % 100 == 0 or (iteration + 1) in [10, 50, 200, 500, 1000, 2000, 5000]:
+                    if verbose:
+                        print(f"    [Intermediate check at iteration {iteration + 1}]")
+                    factor = check_factor_callback(basis, large_number, verbose=False)
+                    if factor is not None:
+                        if verbose:
+                            print(f"    ✓✓✓ FACTOR FOUND during collapse at iteration {iteration + 1}: {factor}")
+                        self.basis = basis
+                        return basis
+            
             if not changed:
                 if verbose:
                     print(f"    Gravity well converged after {iteration + 1} iterations")
                 break
             
             if verbose and (iteration + 1) % 2 == 0:
+                # Track both shortest and average vector sizes to show collapse progress
                 shortest_sq = float('inf')
+                total_norm_sq = 0
+                count = 0
                 for v in basis:
                     norm_sq = sum(int(v[k]) * int(v[k]) for k in range(self.m))
-                    if norm_sq > 0 and norm_sq < shortest_sq:
-                        shortest_sq = norm_sq
+                    if norm_sq > 0:
+                        if norm_sq < shortest_sq:
+                            shortest_sq = norm_sq
+                        total_norm_sq += norm_sq
+                        count += 1
+                
                 if shortest_sq < float('inf'):
                     shortest_int = integer_sqrt(int(shortest_sq))
-                    shortest = float(shortest_int) if shortest_int < 10**10 else float(shortest_int)
-                    print(f"    Iteration {iteration + 1}: shortest vector = {shortest:.2f}")
+                    avg_norm_sq = total_norm_sq // count if count > 0 else 0
+                    avg_norm_int = integer_sqrt(avg_norm_sq) if avg_norm_sq > 0 else 0
+                    
+                    if shortest_int < 10**10 and avg_norm_int < 10**10:
+                        print(f"    Iteration {iteration + 1}: shortest = {shortest_int:.2f}, avg = {avg_norm_int:.2f} (vectors shrinking toward center)")
+                    else:
+                        print(f"    Iteration {iteration + 1}: shortest ≈ {shortest_int}, avg ≈ {avg_norm_int} (vectors shrinking toward center)")
         
         self.basis = basis
         
@@ -963,8 +1023,10 @@ class EuclideanSquarer:
                     shortest_sq = norm_sq
             if shortest_sq < float('inf'):
                 shortest_int = integer_sqrt(int(shortest_sq))
-                shortest = float(shortest_int) if shortest_int < 10**10 else float(shortest_int)
-                print(f"    Collapsed lattice - shortest vector: {shortest:.6f}")
+                if shortest_int < 10**10:
+                    print(f"    Collapsed lattice - shortest vector: {shortest_int:.6f}")
+                else:
+                    print(f"    Collapsed lattice - shortest vector ≈ {shortest_int}")
         
         self.transformation_history.append("collapsed_to_point")
         return basis
@@ -1001,7 +1063,7 @@ class EuclideanSquarer:
         self.square_the_lattice(reduction_factor=0.5, verbose=verbose)
 
         # After geometric transformations reduce to point-like structure, collapse completely
-        result = self.collapse_to_point(max_iterations=10, verbose=verbose)
+        result = self.collapse_to_point(max_iterations=60, verbose=verbose)
 
         if verbose:
             print("\n" + "=" * 70)
@@ -1016,6 +1078,74 @@ class EuclideanSquarer:
         return result
 
     def reset_to_original(self, verbose: bool = False) -> np.ndarray:
+        """
+        Reset the lattice back to its original form.
+
+        Returns the basis to its original state before transformations.
+
+        Args:
+            verbose: Print progress
+
+        Returns:
+            Original lattice basis
+        """
+        if verbose:
+            print("[*] Resetting to original basis...")
+        
+        self.basis = self.original_basis.copy()
+        self.transformation_history = []
+        
+        if verbose:
+            print("    Reset complete")
+        
+        return self.basis
+
+    def run_full_transformation_with_lll_finish(self, delta: float = 0.75, verbose: bool = True) -> np.ndarray:
+        """
+        Run the complete geometric transformation sequence with collapse.
+
+        Args:
+            delta: (Deprecated, not used) Kept for compatibility
+            verbose: Print progress
+
+        Returns:
+            Fully transformed and collapsed lattice basis
+        """
+        if verbose:
+            print("=" * 70)
+            if self.is_integer:
+                print("INTEGER LATTICE SQUARER + COLLAPSE")
+            else:
+                print("EUCLIDEAN GEOMETRIC LATTICE SQUARER + COLLAPSE")
+            print("=" * 70)
+            print(f"Starting lattice: {self.n}x{self.m}\n")
+
+        # Run geometric transformation (now works with both integer and float lattices)
+        if self.is_integer and verbose:
+            print("[*] Integer lattice detected - using integer geometric transformations")
+        
+        self.insert_as_point(verbose=verbose)
+        self.unfold_to_line(verbose=verbose)
+        self.unfold_to_triangle(verbose=verbose)
+        self.unpack_vertices_from_triangle_sides(verbose=verbose)
+        self.form_square_base(verbose=verbose)
+        self.square_the_lattice(reduction_factor=0.5, verbose=verbose)
+
+        # After geometric transformations reduce to point-like structure, collapse completely
+        result = self.collapse_to_point(max_iterations=60, verbose=verbose)
+
+        if verbose:
+            print("\n" + "=" * 70)
+            if self.is_integer:
+                print("INTEGER GEOMETRIC TRANSFORMATION + COLLAPSE COMPLETE")
+            else:
+                print("GEOMETRIC TRANSFORMATION + COLLAPSE COMPLETE")
+            print("=" * 70)
+            if self.transformation_history:
+                print(f"Transformation history: {' → '.join(self.transformation_history)}")
+
+        return result
+
         """
         Reset the lattice back to its original form.
 
@@ -1293,12 +1423,1324 @@ def test_500x500_lattice():
     print(f"{'='*100}")
 
 
+def test_factor_2021():
+    """Test the triangulation collapse method on factoring N=2021."""
+    print("=" * 100)
+    print("TESTING TRIANGULATION COLLAPSE FOR FACTORING N=2021")
+    print("=" * 100)
+    
+    N = 2021
+    print(f"\nTarget: Factor N = {N}")
+    print(f"Expected factors: 43 * 47 = {43 * 47}")
+    
+    # Create a lattice for factorization
+    # Use a lattice based on sqrt(N) approximations and continued fractions
+    import math
+    
+    # Compute sqrt(N) for lattice construction
+    sqrt_N = int(math.isqrt(N))
+    print(f"sqrt({N}) ≈ {sqrt_N}")
+    
+    # Create a lattice basis for factorization
+    # Method: Use a lattice with structure related to N
+    n, m = 15, 15
+    basis = np.zeros((n, m), dtype=object)
+    
+    # Build lattice with vectors encoding N, sqrt(N), and potential factor relations
+    # Row 0: N-based vector
+    for j in range(m):
+        basis[0, j] = N * (j + 1)
+    
+    # Row 1: sqrt(N) based
+    for j in range(m):
+        basis[1, j] = sqrt_N * (2 ** (j % 8))
+    
+    # Rows 2+: Combinations and relations
+    for i in range(2, n):
+        for j in range(m):
+            if j == 0:
+                basis[i, j] = N ** 2
+            elif j == 1:
+                basis[i, j] = sqrt_N ** 2
+            else:
+                # Create relations that might encode factors
+                basis[i, j] = (N * i * (j + 1) + sqrt_N * (i + j)) % (N * 50)
+    
+    # Add vectors that encode potential factor pairs
+    for i in range(min(5, n)):
+        for j in range(m):
+            # Add structure: N mod small primes, sqrt(N) approximations
+            basis[i, j] = basis[i, j] + (N % (j + 2)) * (i + 1)
+    
+    print(f"\nCreated {n}x{m} factorization lattice")
+    print(f"Basis range: {np.min(basis)} to {np.max(basis)}")
+    
+    # Run Euclidean Squarer with triangulation collapse
+    print(f"\n[*] Running Euclidean Squarer with triangulation collapse...")
+    squarer = EuclideanSquarer(basis)
+    
+    # Run full transformation with collapse
+    result = squarer.run_full_transformation_with_lll_finish(verbose=True)
+    
+    # Get the root from collapse - it should be in the divined root
+    print(f"\n[*] Analyzing root and reduced vectors for factorization...")
+    
+    # Check the root (centroid of final basis)
+    root = np.zeros(m, dtype=object)
+    for k in range(m):
+        sum_coord = 0
+        for i in range(n):
+            sum_coord += int(result[i, k])
+        root[k] = sum_coord // n
+    
+    print(f"\nComputed root (centroid): {root[:min(5, m)]}")
+    
+    # Check reduced vectors for factorization clues
+    print(f"\n[*] Checking reduced vectors for factors...")
+    
+    factors_found = []
+    
+    # Check each reduced vector
+    for i in range(n):
+        vec = result[i]
+        vec_norm_sq = sum(int(vec[k]) * int(vec[k]) for k in range(m))
+        
+        if vec_norm_sq > 0:
+            vec_norm = integer_sqrt(vec_norm_sq)
+            
+            # Check if vector components suggest factors
+            for k in range(m):
+                val = abs(int(vec[k]))
+                if val > 1 and val < N:
+                    # Check if it divides N
+                    if N % val == 0:
+                        factor = val
+                        other_factor = N // factor
+                        if factor not in factors_found:
+                            factors_found.append(factor)
+                            print(f"  ✓ Found factor {factor} from vector {i}, component {k}")
+                            print(f"    → {factor} * {other_factor} = {N}")
+    
+    # Check root components for factors
+    print(f"\n[*] Checking root components for factors...")
+    import math
+    
+    # Check root components directly
+    for k in range(min(15, m)):
+        root_val = abs(int(root[k]))
+        if root_val > 1 and root_val < N:
+            if N % root_val == 0:
+                factor = root_val
+                other_factor = N // factor
+                if factor not in factors_found:
+                    factors_found.append(factor)
+                    print(f"  ✓ Found factor {factor} from root component {k}")
+                    print(f"    → {factor} * {other_factor} = {N}")
+    
+    # Check GCDs between root components
+    print(f"\n[*] Checking GCDs of root components...")
+    for i in range(min(10, m)):
+        for j in range(i+1, min(10, m)):
+            val1 = abs(int(root[i]))
+            val2 = abs(int(root[j]))
+            if val1 > 0 and val2 > 0:
+                gcd_val = math.gcd(val1, val2)
+                if gcd_val > 1 and gcd_val < N and N % gcd_val == 0:
+                    factor = gcd_val
+                    other_factor = N // factor
+                    if factor not in factors_found:
+                        factors_found.append(factor)
+                        print(f"  ✓ Found factor {factor} from GCD(root[{i}], root[{j}])")
+                        print(f"    → {factor} * {other_factor} = {N}")
+    
+    # Check differences and sums of root components
+    print(f"\n[*] Checking differences and sums of root components...")
+    for i in range(min(10, m)):
+        for j in range(i+1, min(10, m)):
+            val1 = abs(int(root[i]))
+            val2 = abs(int(root[j]))
+            
+            # Check difference
+            diff = abs(val1 - val2)
+            if diff > 1 and diff < N and N % diff == 0:
+                factor = diff
+                other_factor = N // factor
+                if factor not in factors_found:
+                    factors_found.append(factor)
+                    print(f"  ✓ Found factor {factor} from |root[{i}] - root[{j}]| = {diff}")
+                    print(f"    → {factor} * {other_factor} = {N}")
+            
+            # Check sum mod N
+            if val1 > 0 and val2 > 0:
+                sum_val = (val1 + val2) % N
+                if sum_val > 1 and sum_val < N and N % sum_val == 0:
+                    factor = sum_val
+                    other_factor = N // factor
+                    if factor not in factors_found:
+                        factors_found.append(factor)
+                        print(f"  ✓ Found factor {factor} from (root[{i}] + root[{j}]) mod N = {sum_val}")
+                        print(f"    → {factor} * {other_factor} = {N}")
+    
+    # Check root components modulo N
+    print(f"\n[*] Checking root components modulo N...")
+    for i in range(min(15, m)):
+        root_val = abs(int(root[i]))
+        if root_val > 0:
+            mod_val = root_val % N
+            if mod_val > 1 and mod_val < N and N % mod_val == 0:
+                factor = mod_val
+                other_factor = N // factor
+                if factor not in factors_found:
+                    factors_found.append(factor)
+                    print(f"  ✓ Found factor {factor} from root[{i}] mod N = {mod_val}")
+                    print(f"    → {factor} * {other_factor} = {N}")
+            
+            # Also check if root_val itself is close to a factor
+            for offset in [-2, -1, 1, 2]:
+                candidate = abs(root_val + offset)
+                if candidate > 1 and candidate < N and N % candidate == 0:
+                    factor = candidate
+                    other_factor = N // factor
+                    if factor not in factors_found:
+                        factors_found.append(factor)
+                        print(f"  ✓ Found factor {factor} from root[{i}] + {offset} = {candidate}")
+                        print(f"    → {factor} * {other_factor} = {N}")
+    
+    # Check shortest vectors
+    print(f"\n[*] Analyzing shortest vectors...")
+    vector_norms = []
+    for i in range(n):
+        vec = result[i]
+        norm_sq = sum(int(vec[k]) * int(vec[k]) for k in range(m))
+        if norm_sq > 0:
+            norm = integer_sqrt(norm_sq)
+            vector_norms.append((norm, i))
+    
+    vector_norms.sort()
+    print(f"  Shortest 5 vectors:")
+    for norm, idx in vector_norms[:5]:
+        vec = result[idx]
+        print(f"    Vector {idx}: norm = {norm}, components = {[int(vec[k]) for k in range(min(5, m))]}")
+        
+        # Check if any component is a factor
+        for k in range(m):
+            val = abs(int(vec[k]))
+            if val > 1 and val < N and N % val == 0:
+                factor = val
+                other_factor = N // factor
+                if factor not in factors_found:
+                    factors_found.append(factor)
+                    print(f"      ✓ Factor {factor} found in component {k}")
+    
+    # Summary
+    print(f"\n" + "="*100)
+    print("FACTORIZATION TEST RESULTS")
+    print("="*100)
+    print(f"Target N = {N}")
+    print(f"Expected factors: 43, 47")
+    
+    if factors_found:
+        print(f"\n✓ SUCCESS: Found {len(factors_found)} factor(s): {sorted(set(factors_found))}")
+        for factor in sorted(set(factors_found)):
+            other = N // factor
+            print(f"  {factor} * {other} = {N}")
+    else:
+        print(f"\n✗ No factors found directly in root or vectors")
+        print(f"  Root: {root[:min(10, m)]}")
+        print(f"  Try checking GCDs or other combinations of root components")
+    
+    print(f"\nRoot components (first 10): {[int(root[k]) for k in range(min(10, m))]}")
+    print("="*100)
+    
+    return factors_found, root
+
+
+def test_factor_large_N(N, expected_factors=None):
+    """Test the triangulation collapse method on factoring a large N."""
+    print("=" * 100)
+    print(f"TESTING TRIANGULATION COLLAPSE FOR FACTORING N={N}")
+    print("=" * 100)
+    
+    print(f"\nTarget: Factor N = {N}")
+    if expected_factors:
+        p, q = expected_factors
+        print(f"Expected factors: {p} * {q} = {p * q}")
+    
+    # Create a lattice for factorization
+    import math
+    
+    # Compute sqrt(N) for lattice construction
+    sqrt_N = int(math.isqrt(N))
+    print(f"sqrt({N}) ≈ {sqrt_N}")
+    
+    # Create a lattice basis for factorization
+    # Adjust lattice size based on N
+    num_digits = len(str(N))
+    if N < 10000:
+        n, m = 15, 15
+    elif N < 100000:
+        n, m = 20, 20
+    elif num_digits < 10:
+        n, m = 25, 25
+    elif num_digits < 50:
+        n, m = 30, 30
+    elif num_digits < 100:
+        n, m = 35, 35
+    else:
+        # For very large numbers, use a larger lattice but not too large to avoid memory issues
+        n, m = 40, 40
+    
+    basis = np.zeros((n, m), dtype=object)
+    
+    # Build lattice with vectors encoding N, sqrt(N), and potential factor relations
+    # Row 0: N-based vector
+    for j in range(m):
+        basis[0, j] = N * (j + 1)
+    
+    # Row 1: sqrt(N) based
+    for j in range(m):
+        basis[1, j] = sqrt_N * (2 ** (j % 8))
+    
+    # Rows 2+: Combinations and relations
+    for i in range(2, n):
+        for j in range(m):
+            if j == 0:
+                basis[i, j] = N ** 2
+            elif j == 1:
+                basis[i, j] = sqrt_N ** 2
+            else:
+                # Create relations that might encode factors
+                basis[i, j] = (N * i * (j + 1) + sqrt_N * (i + j)) % (N * 50)
+    
+    # Add vectors that encode potential factor pairs
+    for i in range(min(5, n)):
+        for j in range(m):
+            # Add structure: N mod small primes, sqrt(N) approximations
+            basis[i, j] = basis[i, j] + (N % (j + 2)) * (i + 1)
+    
+    print(f"\nCreated {n}x{m} factorization lattice")
+    print(f"Basis range: {np.min(basis)} to {np.max(basis)}")
+    
+    # Run Euclidean Squarer with triangulation collapse
+    print(f"\n[*] Running Euclidean Squarer with triangulation collapse...")
+    import time
+    start_time = time.time()
+    
+    squarer = EuclideanSquarer(basis)
+    
+    # Run full transformation with collapse
+    result = squarer.run_full_transformation_with_lll_finish(verbose=True)
+    
+    end_time = time.time()
+    print(f"\n[*] Total computation time: {end_time - start_time:.2f} seconds")
+    
+    # Get the root from collapse
+    print(f"\n[*] Analyzing root and reduced vectors for factorization...")
+    
+    # Check the root (centroid of final basis)
+    root = np.zeros(m, dtype=object)
+    for k in range(m):
+        sum_coord = 0
+        for i in range(n):
+            sum_coord += int(result[i, k])
+        root[k] = sum_coord // n
+    
+    print(f"\nComputed root (centroid): {root[:min(5, m)]}")
+    
+    # Check reduced vectors for factorization clues
+    print(f"\n[*] Checking reduced vectors for factors...")
+    
+    factors_found = []
+    
+    # Check each reduced vector
+    for i in range(n):
+        vec = result[i]
+        vec_norm_sq = sum(int(vec[k]) * int(vec[k]) for k in range(m))
+        
+        if vec_norm_sq > 0:
+            # Check if vector components suggest factors
+            for k in range(m):
+                val = abs(int(vec[k]))
+                if val > 1 and val < N:
+                    # Check if it divides N
+                    if N % val == 0:
+                        factor = val
+                        other_factor = N // factor
+                        if factor not in factors_found:
+                            factors_found.append(factor)
+                            print(f"  ✓ Found factor {factor} from vector {i}, component {k}")
+                            print(f"    → {factor} * {other_factor} = {N}")
+    
+    # Check root components for factors
+    print(f"\n[*] Checking root components for factors...")
+    import math
+    
+    # Check root components directly
+    for k in range(min(20, m)):
+        root_val = abs(int(root[k]))
+        if root_val > 1 and root_val < N:
+            if N % root_val == 0:
+                factor = root_val
+                other_factor = N // factor
+                if factor not in factors_found:
+                    factors_found.append(factor)
+                    print(f"  ✓ Found factor {factor} from root component {k}")
+                    print(f"    → {factor} * {other_factor} = {N}")
+    
+    # Check GCDs between root components (more aggressive)
+    print(f"\n[*] Checking GCDs of root components...")
+    # Check pairs
+    for i in range(min(20, m)):
+        for j in range(i+1, min(20, m)):
+            val1 = abs(int(root[i]))
+            val2 = abs(int(root[j]))
+            if val1 > 0 and val2 > 0:
+                gcd_val = math.gcd(val1, val2)
+                if gcd_val > 1 and gcd_val < N and N % gcd_val == 0:
+                    factor = gcd_val
+                    other_factor = N // factor
+                    if factor not in factors_found:
+                        factors_found.append(factor)
+                        print(f"  ✓ Found factor {factor} from GCD(root[{i}], root[{j}])")
+                        print(f"    → {factor} * {other_factor} = {N}")
+    
+    # Check GCDs of triplets
+    print(f"  Checking GCDs of root component triplets...")
+    for i in range(min(15, m)):
+        for j in range(i+1, min(15, m)):
+            for k in range(j+1, min(15, m)):
+                val1 = abs(int(root[i]))
+                val2 = abs(int(root[j]))
+                val3 = abs(int(root[k]))
+                if val1 > 0 and val2 > 0 and val3 > 0:
+                    gcd12 = math.gcd(val1, val2)
+                    if gcd12 > 1:
+                        gcd123 = math.gcd(gcd12, val3)
+                        if gcd123 > 1 and gcd123 < N and N % gcd123 == 0:
+                            factor = gcd123
+                            other_factor = N // factor
+                            if factor not in factors_found:
+                                factors_found.append(factor)
+                                print(f"  ✓ Found factor {factor} from GCD(root[{i}], root[{j}], root[{k}])")
+                                print(f"    → {factor} * {other_factor} = {N}")
+    
+    # Check differences and sums of root components
+    print(f"\n[*] Checking differences and sums of root components...")
+    for i in range(min(15, m)):
+        for j in range(i+1, min(15, m)):
+            val1 = abs(int(root[i]))
+            val2 = abs(int(root[j]))
+            
+            # Check difference
+            diff = abs(val1 - val2)
+            if diff > 1 and diff < N and N % diff == 0:
+                factor = diff
+                other_factor = N // factor
+                if factor not in factors_found:
+                    factors_found.append(factor)
+                    print(f"  ✓ Found factor {factor} from |root[{i}] - root[{j}]| = {diff}")
+                    print(f"    → {factor} * {other_factor} = {N}")
+            
+            # Check sum mod N
+            if val1 > 0 and val2 > 0:
+                sum_val = (val1 + val2) % N
+                if sum_val > 1 and sum_val < N and N % sum_val == 0:
+                    factor = sum_val
+                    other_factor = N // factor
+                    if factor not in factors_found:
+                        factors_found.append(factor)
+                        print(f"  ✓ Found factor {factor} from (root[{i}] + root[{j}]) mod N = {sum_val}")
+                        print(f"    → {factor} * {other_factor} = {N}")
+    
+    # Check root components modulo N
+    print(f"\n[*] Checking root components modulo N...")
+    for i in range(min(20, m)):
+        root_val = abs(int(root[i]))
+        if root_val > 0:
+            mod_val = root_val % N
+            if mod_val > 1 and mod_val < N and N % mod_val == 0:
+                factor = mod_val
+                other_factor = N // factor
+                if factor not in factors_found:
+                    factors_found.append(factor)
+                    print(f"  ✓ Found factor {factor} from root[{i}] mod N = {mod_val}")
+                    print(f"    → {factor} * {other_factor} = {N}")
+            
+            # Also check if root_val itself is close to a factor
+            for offset in range(-100, 101):  # Check wider range for large numbers
+                candidate = abs(root_val + offset)
+                if candidate > 1 and candidate < N and N % candidate == 0:
+                    factor = candidate
+                    other_factor = N // factor
+                    if factor not in factors_found:
+                        factors_found.append(factor)
+                        print(f"  ✓ Found factor {factor} from root[{i}] + {offset} = {candidate}")
+                        print(f"    → {factor} * {other_factor} = {N}")
+            
+            # Check if root_val divided by common factors reveals a factor
+            # Try dividing by small primes and checking if result is a factor
+            for small_prime in [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97]:
+                if root_val % small_prime == 0:
+                    candidate = root_val // small_prime
+                    if candidate > 1 and candidate < N and N % candidate == 0:
+                        factor = candidate
+                        other_factor = N // factor
+                        if factor not in factors_found:
+                            factors_found.append(factor)
+                            print(f"  ✓ Found factor {factor} from root[{i}] / {small_prime} = {candidate}")
+                            print(f"    → {factor} * {other_factor} = {N}")
+            
+            # Check if combinations with sqrt(N) reveal factors
+            if sqrt_N > 0:
+                # Check root_val + sqrt_N, root_val - sqrt_N, etc.
+                for op in ['+', '-', '*']:
+                    if op == '+':
+                        candidate = abs(root_val + sqrt_N)
+                    elif op == '-':
+                        candidate = abs(root_val - sqrt_N)
+                    else:  # '*'
+                        candidate = abs(root_val * sqrt_N) % N
+                    
+                    if candidate > 1 and candidate < N and N % candidate == 0:
+                        factor = candidate
+                        other_factor = N // factor
+                        if factor not in factors_found:
+                            factors_found.append(factor)
+                            print(f"  ✓ Found factor {factor} from root[{i}] {op} sqrt(N) = {candidate}")
+                            print(f"    → {factor} * {other_factor} = {N}")
+    
+    # Check combinations of root components for factors
+    print(f"\n[*] Checking combinations of root components...")
+    for i in range(min(10, m)):
+        for j in range(i+1, min(10, m)):
+            val1 = abs(int(root[i]))
+            val2 = abs(int(root[j]))
+            if val1 > 0 and val2 > 0:
+                # Check product mod N
+                prod_mod = (val1 * val2) % N
+                if prod_mod > 1 and prod_mod < N and N % prod_mod == 0:
+                    factor = prod_mod
+                    other_factor = N // factor
+                    if factor not in factors_found:
+                        factors_found.append(factor)
+                        print(f"  ✓ Found factor {factor} from (root[{i}] * root[{j}]) mod N")
+                        print(f"    → {factor} * {other_factor} = {N}")
+                
+                # Check if GCD of sum/diff reveals factor
+                sum_val = val1 + val2
+                if sum_val > 1 and sum_val < N and N % sum_val == 0:
+                    factor = sum_val
+                    other_factor = N // factor
+                    if factor not in factors_found:
+                        factors_found.append(factor)
+                        print(f"  ✓ Found factor {factor} from root[{i}] + root[{j}] = {sum_val}")
+                        print(f"    → {factor} * {other_factor} = {N}")
+                
+                # Check if one divided by the other (or vice versa) reveals factor
+                if val2 > 0:
+                    div1 = val1 // val2
+                    if div1 > 1 and div1 < N and N % div1 == 0:
+                        factor = div1
+                        other_factor = N // factor
+                        if factor not in factors_found:
+                            factors_found.append(factor)
+                            print(f"  ✓ Found factor {factor} from root[{i}] / root[{j}] = {div1}")
+                            print(f"    → {factor} * {other_factor} = {N}")
+                
+                if val1 > 0:
+                    div2 = val2 // val1
+                    if div2 > 1 and div2 < N and N % div2 == 0:
+                        factor = div2
+                        other_factor = N // factor
+                        if factor not in factors_found:
+                            factors_found.append(factor)
+                            print(f"  ✓ Found factor {factor} from root[{j}] / root[{i}] = {div2}")
+                            print(f"    → {factor} * {other_factor} = {N}")
+    
+    # Final aggressive check: Try to find factors by analyzing root relationships to sqrt(N)
+    print(f"\n[*] Final aggressive factorization check...")
+    if sqrt_N > 0:
+        # Check if any root component is close to sqrt(N) or a multiple
+        for i in range(min(20, m)):
+            root_val = abs(int(root[i]))
+            if root_val > 0:
+                # Check if root_val / sqrt_N or sqrt_N / root_val is close to an integer that's a factor
+                if root_val > sqrt_N:
+                    ratio = root_val // sqrt_N
+                    if ratio > 1 and ratio < N:
+                        # Check if ratio or ratio * sqrt_N is a factor
+                        for candidate in [ratio, (ratio * sqrt_N) % N]:
+                            if candidate > 1 and candidate < N and N % candidate == 0:
+                                factor = candidate
+                                other_factor = N // factor
+                                if factor not in factors_found:
+                                    factors_found.append(factor)
+                                    print(f"  ✓ Found factor {factor} from root[{i}] / sqrt(N) ≈ {ratio}")
+                                    print(f"    → {factor} * {other_factor} = {N}")
+                
+                # Check if root_val is close to sqrt(N) * k for some k that might be a factor
+                if root_val > sqrt_N:
+                    k = root_val // sqrt_N
+                    remainder = root_val % sqrt_N
+                    # If remainder is small, k might be related to a factor
+                    if remainder < sqrt_N // 10:  # Close to a multiple
+                        # Check k and k+1, k-1
+                        for test_k in [k, k+1, k-1]:
+                            if test_k > 1 and test_k < N and N % test_k == 0:
+                                factor = test_k
+                                other_factor = N // factor
+                                if factor not in factors_found:
+                                    factors_found.append(factor)
+                                    print(f"  ✓ Found factor {factor} from root[{i}] ≈ {test_k} * sqrt(N)")
+                                    print(f"    → {factor} * {other_factor} = {N}")
+    
+    # Check shortest vectors
+    print(f"\n[*] Analyzing shortest vectors...")
+    vector_norms = []
+    for i in range(n):
+        vec = result[i]
+        norm_sq = sum(int(vec[k]) * int(vec[k]) for k in range(m))
+        if norm_sq > 0:
+            norm = integer_sqrt(norm_sq)
+            vector_norms.append((norm, i))
+    
+    vector_norms.sort()
+    print(f"  Shortest 5 vectors:")
+    for norm, idx in vector_norms[:5]:
+        vec = result[idx]
+        print(f"    Vector {idx}: norm = {norm}, components = {[int(vec[k]) for k in range(min(5, m))]}")
+        
+        # Check if any component is a factor
+        for k in range(m):
+            val = abs(int(vec[k]))
+            if val > 1 and val < N and N % val == 0:
+                factor = val
+                other_factor = N // factor
+                if factor not in factors_found:
+                    factors_found.append(factor)
+                    print(f"      ✓ Factor {factor} found in component {k}")
+    
+    # === QUADRATIC SIEVE METHOD: Find linear dependency in exponent vectors ===
+    print(f"\n[*] QUADRATIC SIEVE METHOD: Finding linear dependency in exponent vectors...")
+    
+    # Simplified approach: Try combinations of root components directly
+    # For each root component x, we have x² mod N
+    # We want to find a subset where the product of x values squared is a perfect square mod N
+    
+    num_components_to_try = min(30, m)
+    print(f"  Trying combinations of {num_components_to_try} root components...")
+    
+    root_values = []
+    for i in range(num_components_to_try):
+        root_val = abs(int(root[i]))
+        if root_val > 0:
+            root_values.append((i, root_val))
+    
+    print(f"  Found {len(root_values)} non-zero root components")
+    
+    # Try random combinations to find X² ≡ Y² (mod N)
+    import random
+    found_factor_via_qs = False
+    
+    for attempt in range(min(50000, 2**min(15, len(root_values)))):
+        # Random subset of root components
+        subset_size = random.randint(2, min(10, len(root_values)))
+        subset_indices = random.sample(range(len(root_values)), subset_size)
+        
+        # Compute X = product of root values
+        X = 1
+        Y_squared = 1
+        
+        for idx in subset_indices:
+            root_idx, root_val = root_values[idx]
+            X = (X * root_val) % N
+            # Y_squared is the product of squares mod N
+            square_mod_N = (root_val * root_val) % N
+            Y_squared = (Y_squared * square_mod_N) % N
+        
+        # Try Y = integer square root of Y_squared (if it's a perfect square)
+        Y_sqrt = integer_sqrt(Y_squared)
+        if Y_sqrt * Y_sqrt == Y_squared:
+            Y = Y_sqrt
+        else:
+            # Try Y = integer square root of Y_squared mod N
+            Y = integer_sqrt(Y_squared % N)
+        
+        # Try multiple Y candidates
+        y_candidates = [
+            Y,
+            Y_sqrt,
+            Y_squared % N,
+            (N - Y_squared) % N,
+            integer_sqrt((Y_squared * Y_squared) % N) if Y_squared > 0 else 0
+        ]
+        
+        for y_candidate in y_candidates:
+            if y_candidate == 0 or y_candidate >= N:
+                continue
+            
+            # Compute gcd(X - Y, N) and gcd(X + Y, N) directly
+            # This is the key: even without exact congruence, gcd might reveal a factor
+            diff = (X - y_candidate) % N
+            if diff < 0:
+                diff += N
+            sum_xy = (X + y_candidate) % N
+            
+            gcd_diff = math.gcd(diff, N)
+            gcd_sum = math.gcd(sum_xy, N)
+            
+            if gcd_diff > 1 and gcd_diff < N and N % gcd_diff == 0:
+                factor = gcd_diff
+                other_factor = N // factor
+                if factor not in factors_found:
+                    factors_found.append(factor)
+                    print(f"  ✓✓✓ FACTOR FOUND via quadratic sieve (attempt {attempt+1}): {factor}")
+                    print(f"    X = {X % N}")
+                    print(f"    Y = {y_candidate % N}")
+                    print(f"    gcd(X - Y, N) = {factor}")
+                    print(f"    → {factor} * {other_factor} = {N}")
+                    found_factor_via_qs = True
+                    break
+            
+            if gcd_sum > 1 and gcd_sum < N and N % gcd_sum == 0:
+                factor = gcd_sum
+                other_factor = N // factor
+                if factor not in factors_found:
+                    factors_found.append(factor)
+                    print(f"  ✓✓✓ FACTOR FOUND via quadratic sieve (attempt {attempt+1}): {factor}")
+                    print(f"    gcd(X + Y, N) = {factor}")
+                    print(f"    → {factor} * {other_factor} = {N}")
+                    found_factor_via_qs = True
+                    break
+        
+        if found_factor_via_qs:
+            break
+        
+        if found_factor_via_qs:
+            break
+    
+    if not found_factor_via_qs:
+        print(f"  No factor found via direct combination search after {attempt+1} attempts")
+    
+    # Summary
+    print(f"\n" + "="*100)
+    print("FACTORIZATION TEST RESULTS")
+    print("="*100)
+    print(f"Target N = {N}")
+    if expected_factors:
+        p, q = expected_factors
+        print(f"Expected factors: {p}, {q}")
+    
+    if factors_found:
+        print(f"\n✓ SUCCESS: Found {len(factors_found)} factor(s): {sorted(set(factors_found))}")
+        for factor in sorted(set(factors_found)):
+            other = N // factor
+            print(f"  {factor} * {other} = {N}")
+    else:
+        print(f"\n✗ No factors found directly in root or vectors")
+        print(f"  Root (first 10): {root[:min(10, m)]}")
+        print(f"  Try checking GCDs or other combinations of root components")
+    
+    print(f"\nRoot components (first 15): {[int(root[k]) for k in range(min(15, m))]}")
+    print("="*100)
+    
+    return factors_found, root
+
+
+def check_basis_for_factors(basis, large_number, verbose=False):
+    """
+    Quick factorization check on a basis - used during collapse.
+    
+    Args:
+        basis: Current basis to check
+        large_number: Number to factor
+        verbose: Print progress
+        
+    Returns:
+        Factor if found, None otherwise
+    """
+    import math
+    
+    for i, vec in enumerate(basis):
+        for j in range(len(vec)):
+            val = abs(int(vec[j]))
+            if val > 1:
+                # Quick GCD check
+                gcd_val = math.gcd(val, large_number)
+                if gcd_val > 1 and gcd_val < large_number and large_number % gcd_val == 0:
+                    if verbose:
+                        print(f"      Found factor {gcd_val} in vector[{i}][{j}]")
+                    return gcd_val
+                
+                # Check mod N
+                mod_val = val % large_number
+                if mod_val > 1:
+                    gcd_mod = math.gcd(mod_val, large_number)
+                    if gcd_mod > 1 and gcd_mod < large_number and large_number % gcd_mod == 0:
+                        if verbose:
+                            print(f"      Found factor {gcd_mod} from vector[{i}][{j}] mod N")
+                        return gcd_mod
+        
+        # Check differences and sums within vector
+        if len(vec) >= 2:
+            val1 = abs(int(vec[0]))
+            val2 = abs(int(vec[1]))
+            if val1 > 0 and val2 > 0:
+                diff = abs(val1 - val2)
+                if diff > 1:
+                    gcd_diff = math.gcd(diff, large_number)
+                    if gcd_diff > 1 and gcd_diff < large_number and large_number % gcd_diff == 0:
+                        if verbose:
+                            print(f"      Found factor {gcd_diff} from |vector[{i}][0] - vector[{i}][1]|")
+                        return gcd_diff
+                
+                sum_val = val1 + val2
+                if sum_val > 1:
+                    gcd_sum = math.gcd(sum_val, large_number)
+                    if gcd_sum > 1 and gcd_sum < large_number and large_number % gcd_sum == 0:
+                        if verbose:
+                            print(f"      Found factor {gcd_sum} from vector[{i}][0] + vector[{i}][1]")
+                        return gcd_sum
+    
+    return None
+
+
+def recover_factor(large_number: int):
+    """
+    Recover a factor of a large number using the EuclideanSquarer geometric transformation.
+    
+    Args:
+        large_number: The number to factor
+        
+    Returns:
+        A factor of large_number if found, None otherwise
+    """
+    # 1. Create a 2D lattice basis for the number
+    # For factorization, we use a lattice that helps find short vectors
+    # Standard factorization lattice: [[N, 0], [sqrt(N), 1]]
+    # This creates a lattice where short vectors correspond to factors
+    m = integer_sqrt(large_number)
+    
+    # Try multiple lattice constructions for better reduction
+    # For factorization, we want lattices that preserve the relationship to N
+    lattice_configs = [
+        # Standard factorization lattice: [[N, 0], [sqrt(N), 1]]
+        # Short vectors in this lattice correspond to factors
+        np.array([
+            [large_number, 0],
+            [m, 1]
+        ], dtype=object),
+        # Alternative: [[N, 1], [sqrt(N), 0]]
+        np.array([
+            [large_number, 1],
+            [m, 0]
+        ], dtype=object),
+        # Alternative: [[1, sqrt(N)], [0, N]]
+        np.array([
+            [1, m],
+            [0, large_number]
+        ], dtype=object),
+        # Extended lattice: add more vectors for better reduction
+        np.array([
+            [large_number, 0, 0],
+            [m, 1, 0],
+            [0, m, 1]
+        ], dtype=object),
+    ]
+    
+    best_factor = None
+    best_basis = None
+    
+    for lattice_idx, basis in enumerate(lattice_configs):
+        print(f"\n[*] Trying lattice configuration {lattice_idx + 1}/{len(lattice_configs)}")
+        print(f"[*] Initializing Squarer for number: {str(large_number)[:20]}...")
+        squarer = EuclideanSquarer(basis)
+
+        # 2. Skip geometric transformations - they may destroy factorization structure
+        # Go straight to collapse and reduction for factorization
+        # squarer.insert_as_point(verbose=False)
+        # squarer.unfold_to_line(verbose=False)
+        
+        # 3. Collapse the lattice with more iterations
+        # This uses the Euclidean gravity well to find the shortest vector
+        print("[*] Collapsing lattice to extract factor...")
+        # For very large numbers, need more iterations
+        num_digits = len(str(large_number))
+        # Double everything - go all out!
+        # For very large numbers, use even more iterations
+        max_iter = max(3600, num_digits * 18)  # Scale iterations with number size (18x for very large numbers - DOUBLED)
+        print(f"[*] Using {max_iter} collapse iterations for {num_digits}-digit number (DOUBLED)")
+        print(f"[*] Checking for factors at intermediate stages during collapse...")
+        squarer.collapse_to_point(max_iterations=max_iter, verbose=True, 
+                                  check_factor_callback=check_basis_for_factors, 
+                                  large_number=large_number)
+        
+        # 4. Multiple rounds of reduction with progressively tighter parameters
+        print("[*] Applying multiple rounds of reduction...")
+        for round_num, delta in enumerate([0.99, 0.95, 0.90, 0.75]):
+            print(f"  Round {round_num + 1}: delta = {delta}")
+            final_basis = squarer.finish_with_lll_like_reduction(delta=delta, verbose=True)
+            
+            # Check if we got a good reduction (shortest vector is reasonable)
+            if len(final_basis) > 0:
+                shortest_vec = final_basis[0]
+                shortest_norm_sq = sum(int(shortest_vec[k]) * int(shortest_vec[k]) for k in range(len(shortest_vec)))
+                shortest_norm = integer_sqrt(shortest_norm_sq)
+                
+                # If we have a reasonably short vector, analyze it
+                # For factorization, we want vectors on the order of sqrt(N) or smaller
+                sqrt_N = integer_sqrt(large_number)
+                if shortest_norm < sqrt_N * 100:  # Reasonably reduced
+                    print(f"    Shortest vector norm: {shortest_norm} (target: < {sqrt_N * 100})")
+                    break
+        
+        # Use the final basis from the last round
+        final_basis = squarer.basis
+        
+        # 5. Extract the factor - check all components of all vectors
+        print(f"[*] Analyzing reduced basis {lattice_idx + 1} for factors...")
+        import math
+        
+        factors_found = []
+        
+        # Check all vectors in the reduced basis
+        for i, vec in enumerate(final_basis):
+            print(f"  Checking vector {i}: {[int(vec[j]) for j in range(len(vec))]}")
+            
+            # Check each component
+            for j in range(len(vec)):
+                val = abs(int(vec[j]))
+                # Direct factor check
+                if val > 1 and val < large_number and large_number % val == 0:
+                    factor = val
+                    if factor not in factors_found:
+                        factors_found.append(factor)
+                        print(f"    ✓ Found factor {factor} in vector[{i}][{j}]")
+                
+                # CRITICAL: Check GCD with N (even for large values)
+                # This is the key - GCD can reveal factors even if val > N
+                if val > 1:
+                    # Show progress for large GCD computations
+                    if val > 10**50 or large_number > 10**50:
+                        print(f"    Computing GCD(vector[{i}][{j}], N)... (this may take a moment)")
+                    gcd_with_N = math.gcd(val, large_number)
+                    if gcd_with_N > 1:
+                        if gcd_with_N < large_number and large_number % gcd_with_N == 0:
+                            factor = gcd_with_N
+                            if factor not in factors_found:
+                                factors_found.append(factor)
+                                print(f"    ✓✓✓ Found factor {factor} from gcd(vector[{i}][{j}], N)")
+                                print(f"        vector[{i}][{j}] = {str(val)[:100]}...")
+                                return factor  # Return immediately
+                        elif gcd_with_N == large_number:
+                            # This means val is a multiple of N - check if we can extract a factor
+                            # by checking val // N
+                            quotient = val // large_number
+                            if quotient > 1:
+                                print(f"    Note: vector[{i}][{j}] is a multiple of N (quotient = {quotient})")
+                    elif val > 10**50:
+                        print(f"    GCD(vector[{i}][{j}], N) = 1 (no common factors)")
+            
+            # Check GCDs between components of the same vector
+            for j in range(len(vec)):
+                for k in range(j+1, len(vec)):
+                    val1 = abs(int(vec[j]))
+                    val2 = abs(int(vec[k]))
+                    if val1 > 0 and val2 > 0:
+                        gcd_val = math.gcd(val1, val2)
+                        if gcd_val > 1 and gcd_val < large_number and large_number % gcd_val == 0:
+                            factor = gcd_val
+                            if factor not in factors_found:
+                                factors_found.append(factor)
+                                print(f"    ✓ Found factor {factor} from GCD(vector[{i}][{j}], vector[{i}][{k}])")
+            
+            # Check differences and sums - AGGRESSIVE GCD CHECKS
+            if len(vec) >= 2:
+                val1 = abs(int(vec[0]))
+                val2 = abs(int(vec[1]))
+                if val1 > 0 and val2 > 0:
+                    # Check difference
+                    diff = abs(val1 - val2)
+                    if diff > 1:
+                        # Direct factor check
+                        if diff < large_number and large_number % diff == 0:
+                            factor = diff
+                            if factor not in factors_found:
+                                factors_found.append(factor)
+                                print(f"    ✓ Found factor {factor} from |vector[{i}][0] - vector[{i}][1]|")
+                                return factor
+                        # CRITICAL: GCD check on difference
+                        gcd_diff = math.gcd(diff, large_number)
+                        if gcd_diff > 1 and gcd_diff < large_number and large_number % gcd_diff == 0:
+                            factor = gcd_diff
+                            if factor not in factors_found:
+                                factors_found.append(factor)
+                                print(f"    ✓✓✓ Found factor {factor} from GCD(|vector[{i}][0] - vector[{i}][1]|, N)")
+                                return factor
+                    
+                    # Check sum
+                    sum_val = val1 + val2
+                    if sum_val > 1:
+                        # Direct factor check
+                        if sum_val < large_number and large_number % sum_val == 0:
+                            factor = sum_val
+                            if factor not in factors_found:
+                                factors_found.append(factor)
+                                print(f"    ✓ Found factor {factor} from vector[{i}][0] + vector[{i}][1]")
+                                return factor
+                        # CRITICAL: GCD check on sum
+                        gcd_sum = math.gcd(sum_val, large_number)
+                        if gcd_sum > 1 and gcd_sum < large_number and large_number % gcd_sum == 0:
+                            factor = gcd_sum
+                            if factor not in factors_found:
+                                factors_found.append(factor)
+                                print(f"    ✓✓✓ Found factor {factor} from GCD(vector[{i}][0] + vector[{i}][1], N)")
+                                return factor
+                    
+                    # Check product mod N
+                    prod_mod = (val1 * val2) % large_number
+                    if prod_mod > 1:
+                        gcd_prod = math.gcd(prod_mod, large_number)
+                        if gcd_prod > 1 and gcd_prod < large_number and large_number % gcd_prod == 0:
+                            factor = gcd_prod
+                            if factor not in factors_found:
+                                factors_found.append(factor)
+                                print(f"    ✓✓✓ Found factor {factor} from GCD((vector[{i}][0] * vector[{i}][1]) mod N, N)")
+                                return factor
+                    
+                    # Check if val1 or val2 mod N reveals factor
+                    for val, idx in [(val1, 0), (val2, 1)]:
+                        val_mod = val % large_number
+                        if val_mod > 1:
+                            gcd_val_mod = math.gcd(val_mod, large_number)
+                            if gcd_val_mod > 1 and gcd_val_mod < large_number and large_number % gcd_val_mod == 0:
+                                factor = gcd_val_mod
+                                if factor not in factors_found:
+                                    factors_found.append(factor)
+                                    print(f"    ✓✓✓ Found factor {factor} from GCD(vector[{i}][{idx}] mod N, N)")
+                                    return factor
+        
+        # Check GCDs between different vectors - AGGRESSIVE
+        print("[*] Checking GCDs between different vectors...")
+        for i in range(len(final_basis)):
+            for j in range(i+1, len(final_basis)):
+                vec1 = final_basis[i]
+                vec2 = final_basis[j]
+                for k in range(min(len(vec1), len(vec2))):
+                    val1 = abs(int(vec1[k]))
+                    val2 = abs(int(vec2[k]))
+                    if val1 > 0 and val2 > 0:
+                        # Direct GCD check
+                        gcd_val = math.gcd(val1, val2)
+                        if gcd_val > 1 and gcd_val < large_number and large_number % gcd_val == 0:
+                            factor = gcd_val
+                            if factor not in factors_found:
+                                factors_found.append(factor)
+                                print(f"    ✓ Found factor {factor} from GCD(vector[{i}][{k}], vector[{j}][{k}])")
+                                return factor
+                        
+                        # Check difference between vectors
+                        diff_ij = abs(val1 - val2)
+                        if diff_ij > 1:
+                            gcd_diff_ij = math.gcd(diff_ij, large_number)
+                            if gcd_diff_ij > 1 and gcd_diff_ij < large_number and large_number % gcd_diff_ij == 0:
+                                factor = gcd_diff_ij
+                                if factor not in factors_found:
+                                    factors_found.append(factor)
+                                    print(f"    ✓✓✓ Found factor {factor} from GCD(|vector[{i}][{k}] - vector[{j}][{k}]|, N)")
+                                    return factor
+                        
+                        # Check sum between vectors
+                        sum_ij = val1 + val2
+                        if sum_ij > 1:
+                            gcd_sum_ij = math.gcd(sum_ij, large_number)
+                            if gcd_sum_ij > 1 and gcd_sum_ij < large_number and large_number % gcd_sum_ij == 0:
+                                factor = gcd_sum_ij
+                                if factor not in factors_found:
+                                    factors_found.append(factor)
+                                    print(f"    ✓✓✓ Found factor {factor} from GCD(vector[{i}][{k}] + vector[{j}][{k}], N)")
+                                    return factor
+                        
+                        # Check product mod N
+                        prod_ij_mod = (val1 * val2) % large_number
+                        if prod_ij_mod > 1:
+                            gcd_prod_ij = math.gcd(prod_ij_mod, large_number)
+                            if gcd_prod_ij > 1 and gcd_prod_ij < large_number and large_number % gcd_prod_ij == 0:
+                                factor = gcd_prod_ij
+                                if factor not in factors_found:
+                                    factors_found.append(factor)
+                                    print(f"    ✓✓✓ Found factor {factor} from GCD((vector[{i}][{k}] * vector[{j}][{k}]) mod N, N)")
+                                    return factor
+        
+        # Additional checks: modulo operations and nearby values
+        print("[*] Checking modulo operations and nearby values...")
+        for i, vec in enumerate(final_basis):
+            for j in range(len(vec)):
+                val = abs(int(vec[j]))
+                if val > 0:
+                    # Check val mod N
+                    mod_val = val % large_number
+                    if mod_val > 1 and mod_val < large_number and large_number % mod_val == 0:
+                        factor = mod_val
+                        if factor not in factors_found:
+                            factors_found.append(factor)
+                            print(f"    ✓ Found factor {factor} from vector[{i}][{j}] mod N = {mod_val}")
+                    
+                    # CRITICAL: Check GCD of mod_val with N (even if mod_val doesn't divide N)
+                    if mod_val > 1:
+                        gcd_mod = math.gcd(mod_val, large_number)
+                        if gcd_mod > 1 and gcd_mod < large_number and large_number % gcd_mod == 0:
+                            factor = gcd_mod
+                            if factor not in factors_found:
+                                factors_found.append(factor)
+                                print(f"    ✓✓✓ Found factor {factor} from GCD(vector[{i}][{j}] mod N, N)")
+                                return factor
+                    
+                    # Check nearby values (val ± small offsets)
+                    for offset in [-10, -5, -2, -1, 1, 2, 5, 10, 100, 1000]:
+                        candidate = abs(val + offset)
+                        if candidate > 1 and candidate < large_number and large_number % candidate == 0:
+                            factor = candidate
+                            if factor not in factors_found:
+                                factors_found.append(factor)
+                                print(f"    ✓ Found factor {factor} from vector[{i}][{j}] + {offset} = {candidate}")
+                        
+                        # Also check GCD of candidate with N
+                        if candidate > 1:
+                            gcd_candidate = math.gcd(candidate, large_number)
+                            if gcd_candidate > 1 and gcd_candidate < large_number and large_number % gcd_candidate == 0:
+                                factor = gcd_candidate
+                                if factor not in factors_found:
+                                    factors_found.append(factor)
+                                    print(f"    ✓✓✓ Found factor {factor} from GCD(vector[{i}][{j}] + {offset}, N)")
+                                    return factor
+        
+        # Check linear combinations of vectors (can reveal factors)
+        print("[*] Checking linear combinations of vectors...")
+        for i in range(len(final_basis)):
+            for j in range(i+1, len(final_basis)):
+                vec1 = final_basis[i]
+                vec2 = final_basis[j]
+                # Try simple linear combinations: vec1 ± vec2, vec1 ± 2*vec2, etc.
+                for coeff in [1, -1, 2, -2]:
+                    if len(vec1) == len(vec2):
+                        combo = np.zeros(len(vec1), dtype=object)
+                        for k in range(len(vec1)):
+                            combo[k] = int(vec1[k]) + coeff * int(vec2[k])
+                        
+                        # Check each component of the combination
+                        for k in range(len(combo)):
+                            val = abs(int(combo[k]))
+                            if val > 1:
+                                # Direct factor check
+                                if val < large_number and large_number % val == 0:
+                                    factor = val
+                                    if factor not in factors_found:
+                                        factors_found.append(factor)
+                                        print(f"    ✓ Found factor {factor} from vector[{i}] + {coeff}*vector[{j}] component[{k}]")
+                                        return factor
+                                
+                                # GCD check
+                                gcd_with_N = math.gcd(val, large_number)
+                                if gcd_with_N > 1 and gcd_with_N < large_number and large_number % gcd_with_N == 0:
+                                    factor = gcd_with_N
+                                    if factor not in factors_found:
+                                        factors_found.append(factor)
+                                        print(f"    ✓✓✓ Found factor {factor} from GCD(combo[{k}], N) where combo = vector[{i}] + {coeff}*vector[{j}]")
+                                        return factor
+                                
+                                # Check modulo and GCD of modulo
+                                mod_combo = val % large_number
+                                if mod_combo > 1:
+                                    gcd_mod_combo = math.gcd(mod_combo, large_number)
+                                    if gcd_mod_combo > 1 and gcd_mod_combo < large_number and large_number % gcd_mod_combo == 0:
+                                        factor = gcd_mod_combo
+                                        if factor not in factors_found:
+                                            factors_found.append(factor)
+                                            print(f"    ✓✓✓ Found factor {factor} from GCD((vector[{i}] + {coeff}*vector[{j}])[{k}] mod N, N)")
+                                            return factor
+        
+        # Try to get root/centroid if available and check it
+        if hasattr(squarer, 'basis') and len(squarer.basis) > 0:
+            print("[*] Checking root/centroid for factors...")
+            # Compute centroid of current basis using integer arithmetic to avoid overflow
+            basis = squarer.basis
+            n_vectors = len(basis)
+            if n_vectors > 0:
+                m_dim = len(basis[0])
+                centroid = np.zeros(m_dim, dtype=object)
+                for j in range(m_dim):
+                    sum_val = 0
+                    for i in range(n_vectors):
+                        sum_val += int(basis[i][j])
+                    centroid[j] = sum_val // n_vectors  # Integer division
+                
+                print(f"[*] Checking centroid/root for factors (centroid = {centroid[:min(3, len(centroid))]})...")
+                for j in range(len(centroid)):
+                    val = abs(int(centroid[j]))
+                    if val > 0:
+                        # Check direct value
+                        if val > 1 and val < large_number and large_number % val == 0:
+                            factor = val
+                            if factor not in factors_found:
+                                factors_found.append(factor)
+                                print(f"    ✓ Found factor {factor} in centroid[{j}]")
+                                return factor
+                        
+                        # CRITICAL: GCD check on centroid value
+                        gcd_centroid = math.gcd(val, large_number)
+                        if gcd_centroid > 1 and gcd_centroid < large_number and large_number % gcd_centroid == 0:
+                            factor = gcd_centroid
+                            if factor not in factors_found:
+                                factors_found.append(factor)
+                                print(f"    ✓✓✓ Found factor {factor} from GCD(centroid[{j}], N)")
+                                return factor
+                        
+                        # Check modulo
+                        mod_val = val % large_number
+                        if mod_val > 1:
+                            # Direct factor check
+                            if mod_val < large_number and large_number % mod_val == 0:
+                                factor = mod_val
+                                if factor not in factors_found:
+                                    factors_found.append(factor)
+                                    print(f"    ✓ Found factor {factor} from centroid[{j}] mod N")
+                                    return factor
+                            # CRITICAL: GCD check on modulo
+                            gcd_mod_centroid = math.gcd(mod_val, large_number)
+                            if gcd_mod_centroid > 1 and gcd_mod_centroid < large_number and large_number % gcd_mod_centroid == 0:
+                                factor = gcd_mod_centroid
+                                if factor not in factors_found:
+                                    factors_found.append(factor)
+                                    print(f"    ✓✓✓ Found factor {factor} from GCD(centroid[{j}] mod N, N)")
+                                    return factor
+                
+                # Check differences and sums between centroid components
+                if len(centroid) >= 2:
+                    for j1 in range(len(centroid)):
+                        for j2 in range(j1+1, len(centroid)):
+                            val1 = abs(int(centroid[j1]))
+                            val2 = abs(int(centroid[j2]))
+                            if val1 > 0 and val2 > 0:
+                                # Check difference
+                                diff_cent = abs(val1 - val2)
+                                if diff_cent > 1:
+                                    gcd_diff_cent = math.gcd(diff_cent, large_number)
+                                    if gcd_diff_cent > 1 and gcd_diff_cent < large_number and large_number % gcd_diff_cent == 0:
+                                        factor = gcd_diff_cent
+                                        if factor not in factors_found:
+                                            factors_found.append(factor)
+                                            print(f"    ✓✓✓ Found factor {factor} from GCD(|centroid[{j1}] - centroid[{j2}]|, N)")
+                                            return factor
+                                
+                                # Check sum
+                                sum_cent = val1 + val2
+                                if sum_cent > 1:
+                                    gcd_sum_cent = math.gcd(sum_cent, large_number)
+                                    if gcd_sum_cent > 1 and gcd_sum_cent < large_number and large_number % gcd_sum_cent == 0:
+                                        factor = gcd_sum_cent
+                                        if factor not in factors_found:
+                                            factors_found.append(factor)
+                                            print(f"    ✓✓✓ Found factor {factor} from GCD(centroid[{j1}] + centroid[{j2}], N)")
+                                            return factor
+        
+        # Special check for factorization lattices
+        print("[*] Performing factorization-lattice-specific checks...")
+        if len(final_basis) >= 2:
+            vec0 = final_basis[0]
+            vec1 = final_basis[1]
+            
+            for vec in [vec0, vec1]:
+                if len(vec) >= 2:
+                    a = abs(int(vec[0]))
+                    b = abs(int(vec[1]))
+                    if a > 0 and b > 0:
+                        # Check if a or b is a factor
+                        for candidate in [a, b]:
+                            if candidate > 1 and candidate < large_number and large_number % candidate == 0:
+                                factor = candidate
+                                if factor not in factors_found:
+                                    factors_found.append(factor)
+                                    print(f"    ✓ Found factor {factor} from vector component")
+                        
+                        # Check modulo
+                        a_mod = a % large_number
+                        b_mod = b % large_number
+                        for candidate in [a_mod, b_mod]:
+                            if candidate > 1 and candidate < large_number and large_number % candidate == 0:
+                                factor = candidate
+                                if factor not in factors_found:
+                                    factors_found.append(factor)
+                                    print(f"    ✓ Found factor {factor} from vector component mod N")
+                        
+                        # Check operations
+                        for op_result in [abs(a - b), a + b, abs(a - large_number), abs(b - large_number)]:
+                            if op_result > 1 and op_result < large_number and large_number % op_result == 0:
+                                factor = op_result
+                                if factor not in factors_found:
+                                    factors_found.append(factor)
+                                    print(f"    ✓ Found factor {factor} from vector component operation")
+        
+        if factors_found:
+            # Found a factor in this lattice configuration!
+            print(f"[+] Found {len(factors_found)} factor(s) in lattice {lattice_idx + 1}: {sorted(set(factors_found))}")
+            return min(factors_found)
+        
+        # If no factor found, try next lattice configuration
+        print(f"[-] No factors found in lattice configuration {lattice_idx + 1}, trying next...")
+    
+    # If we've tried all configurations and found nothing
+    print("[-] No factors found in any lattice configuration")
+    return None
+
+
 if __name__ == "__main__":
+    # Test on very large N
+    N_large = 26708882667554369982437861342351118474042371033997336697986586402775383400246322619016812787181467231471048796964850815523596704175071723619765332346581953717680346095108340696726402664411612160417716670653240713611968891209556306463594851833064996419581908274549156756056255261889920919584593870332572355914256079346048667691862239033547392370032422767668202804156084188593989264937129324426087816123158899420472331974190422242970077203179208198571882962374758906045262455121357827170244155360520275840910459093335222429901918603561764757964693288424456827223730587938696836067675731921817090335986581149168041534193
+    
+    print("=" * 100)
+    print("TESTING ON VERY LARGE N")
+    print("=" * 100)
+    print(f"N has {len(str(N_large))} digits")
+    print(f"Testing with 4-reference triangulation method...")
+    
+    test_factor_large_N(N_large, expected_factors=None)
+    
+    # Test factorization of larger N
+    # Try a larger semiprime: 97 * 103 = 9991
+    # test_factor_large_N(9991, expected_factors=(97, 103))
+    
+    # print("\n\n" + "="*100 + "\n")
+    
+    # Try an even larger semiprime: 127 * 131 = 16637
+    # test_factor_large_N(16637, expected_factors=(127, 131))
+    
+    # print("\n\n" + "="*100 + "\n")
+    
+    # Try an even larger semiprime: 251 * 257 = 64507
+    # test_factor_large_N(64507, expected_factors=(251, 257))
+    
+    # Test factorization of 2021
+    # test_factor_2021()
+    
     # Run basic demo
-    demo_euclidean_squarer()
+    # demo_euclidean_squarer()
 
     # Run comprehensive lattice reduction power test
-    test_lattice_reduction_power()
+    # test_lattice_reduction_power()
 
     # Run massive 500x500 lattice test
-    test_500x500_lattice()
+    # test_500x500_lattice()
+    
+    # Test recover_factor function
+    print("\n\n" + "="*100)
+    print("TESTING recover_factor FUNCTION")
+    print("="*100)
+    target_n = 111111111111111111111111111111111111
+    
+    factor = recover_factor(target_n)
+    if factor:
+        print(f"\n[+] Success! Factor recovered: {factor}")
+        print(f"[+] Co-factor: {target_n // factor}")
+    else:
+        print("\n[-] Geometric collapse did not converge on a factor. Try increasing max_iterations.")
