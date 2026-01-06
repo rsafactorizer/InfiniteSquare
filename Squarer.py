@@ -59,7 +59,7 @@ class LatticeLine:
         abs_dz = dz if dz >= 0 else -dz
         
         return abs_dx + abs_dy + abs_dz
-    
+
 
 class GeometricLattice:
     """
@@ -598,8 +598,8 @@ class GeometricLattice:
         volume_compression = volume / initial_volume if initial_volume > 0 else 0
         surface_compression = surface_area / initial_surface_area if initial_surface_area > 0 else 0
         span_compression = max_span / initial_span if initial_span > 0 else 0
-            
-            return {
+        
+        return {
             'stage': self.current_stage,
             'bounds': {'min_x': min_x, 'max_x': max_x, 'min_y': min_y, 'max_y': max_y, 'min_z': min_z, 'max_z': max_z},
             'dimensions': {'width': width, 'height': height, 'depth': depth},
@@ -808,7 +808,7 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
         return {'N': N, 'factors': [], 'error': 'No singularity found'}
     
     print(f"✓ Initial singularity found: {initial_singularity}")
-        print()
+    print()
     
     # Stage B & C: Iterative Zoom - Re-mesh and collapse ~100 times
     print("="*80)
@@ -816,16 +816,17 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
     print("="*80)
     print()
     
-    # Number of recursive refinements (can be overridden by parameter)
-    if 'zoom_iterations' not in locals():
-        zoom_iterations = 100
+    zoom_iterations = 100  # Number of recursive refinements
     micro_lattice_size = 100  # 100×100×100 micro-lattice
     zoom_factor_per_iteration = micro_lattice_size ** 3  # 10^6 per iteration
-    cumulative_zoom = 1
     
     current_lattice = lattice
     current_center = initial_singularity
     zoom_history = [{'iteration': 0, 'point': initial_singularity, 'zoom_factor': 1}]
+    
+    # Use parameter if provided, otherwise default to 100
+    if zoom_iterations is None:
+        zoom_iterations = 100
     
     print(f"Performing {zoom_iterations} iterations of recursive refinement...")
     print(f"Each iteration: {micro_lattice_size}×{micro_lattice_size}×{micro_lattice_size} = {zoom_factor_per_iteration:,} zoom factor")
@@ -865,9 +866,6 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
         if not current_center:
             print(f"  Warning: No point found at iteration {iteration}")
             break
-        
-        # Update cumulative zoom factor
-        cumulative_zoom *= zoom_factor_per_iteration
         
         if iteration % 10 == 0 or iteration <= 5:
             print(f"  → Compressed to: {current_center}")
@@ -938,7 +936,7 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
         if final_zoom_exponent > 100:
             # For very large zoom, use a fixed small window
             search_window_size = 10000
-                else:
+        else:
             # For smaller zoom, calculate based on zoom factor
             zoom_factor_approx = 10 ** min(final_zoom_exponent, 100)  # Cap at 10^100 for calculation
             search_window_size = min(10000, sqrt_n // (zoom_factor_approx // 1000))
@@ -1162,7 +1160,7 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
         orig_search_range = min(20, N // 20)
     elif n_bits < 200:
         orig_search_range = min(100, 1 << (n_bits // 4))
-            else:
+    else:
         # For very large numbers, focus search around sqrt(N)
         # Use the fact that factors are near sqrt(N) for balanced factorization
         orig_search_range = min(10000, 1 << (n_bits // 5))
@@ -1210,7 +1208,7 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
         for f1, f2 in unique_factors:
             print(f"  ✓ {f1} × {f2} = {N}")
             print(f"    Verification: {f1 * f2 == N}")
-        else:
+    else:
         print("No factors found through lattice compression.")
         print("  This may indicate N is prime, or factors require different encoding.")
     
@@ -1247,7 +1245,7 @@ def demo_lattice_transformations():
     lattice = GeometricLattice(size, initial_point)
     print(f"Lattice contains {len(lattice.lattice_points)} points")
     print()
-
+    
     # Execute transformation sequence with compression analysis at each stage
     print("Initial state:")
     lattice.print_compression_analysis()
@@ -1267,12 +1265,12 @@ def demo_lattice_transformations():
     
     lattice.add_vertex_lines()
     lattice.print_compression_analysis()
-            print()
+    print()
     
     lattice.compress_square_to_triangle()
     lattice.print_compression_analysis()
-            print()
-            
+    print()
+    
     lattice.compress_triangle_to_line()
     lattice.print_compression_analysis()
     print()
@@ -1316,7 +1314,7 @@ if __name__ == "__main__":
                 factor_with_lattice_compression(N)
             else:
                 print("Please provide a number > 1 to factor")
-            except ValueError:
+        except ValueError:
             # If not a number, treat as size for demo
             size = int(sys.argv[1])
             demo_lattice_transformations()
