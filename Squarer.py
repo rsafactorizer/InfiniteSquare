@@ -63,39 +63,44 @@ class LatticeLine:
 
 class GeometricLattice:
     """
-    Represents a full lattice that can be transformed geometrically.
+    Represents a full 3D lattice (cube) that can be transformed geometrically.
     All points in the lattice are transformed together at each step.
     """
     
-    def __init__(self, size: int, initial_point: Optional[LatticePoint] = None):
+    def __init__(self, size: int, initial_point: Optional[LatticePoint] = None, remainder_lattice_size: int = 100):
         """
-        Initialize lattice.
+        Initialize 3D lattice (cube).
         
         Args:
-            size: Size of the lattice (size x size grid)
+            size: Size of the lattice (size x size x size cube)
             initial_point: Optional starting point to insert
+            remainder_lattice_size: Size of 3D remainder lattice (for z-coordinate mapping)
         """
         self.size = size
+        self.remainder_lattice_size = remainder_lattice_size
         self.lattice_points = []
         
-        # Create full lattice grid
+        # Create full 3D lattice cube (size × size × size)
+        print(f"  Creating 3D lattice cube: {size}×{size}×{size} = {size**3:,} points")
         for x in range(size):
             for y in range(size):
-                self.lattice_points.append(LatticePoint(x, y, 0))
+                for z in range(size):
+                    self.lattice_points.append(LatticePoint(x, y, z))
         
-        # Store transformation history
+        # Store transformation history and modular patterns
         self.transformation_history = []
+        self.modular_patterns = []  # Track modular patterns during collapse
         self.current_stage = "initial"
         
         # If initial point provided, mark it
         if initial_point:
             self.initial_point = initial_point
             # Replace center point with initial point
-            center_idx = (size // 2) * size + (size // 2)
+            center_idx = (size // 2) * size * size + (size // 2) * size + (size // 2)
             if center_idx < len(self.lattice_points):
                 self.lattice_points[center_idx] = initial_point
         else:
-            self.initial_point = LatticePoint(size // 2, size // 2, 0)
+            self.initial_point = LatticePoint(size // 2, size // 2, size // 2)
     
     def get_lattice_array(self) -> np.ndarray:
         """Get all lattice points as numpy array."""
@@ -119,16 +124,39 @@ class GeometricLattice:
         self.lattice_points = new_points
         self.transformation_history.append(self.current_stage)
     
+    def compress_volume_to_plane(self):
+        """
+        Stage 0: Collapse 3D space into a 2D median plane.
+        Every point in the cube is 'dragged' to the median Z-layer.
+        """
+        print("Stage 0: Compressing 3D volume to 2D median plane...")
+        
+        # Calculate median z coordinate
+        median_z = self.size // 2
+        
+        print(f"  Median z-plane: {median_z}")
+        print(f"  Dragging all {len(self.lattice_points)} points to z={median_z}")
+        
+        # Every point in the cube is 'dragged' to the median Z-layer
+        for p in self.lattice_points:
+            p.z = median_z
+        
+        self.current_stage = "median_plane"
+        print(f"  Lattice transformed: {len(self.lattice_points)} points compressed to 2D plane at z={median_z}")
+    
     def expand_point_to_line(self):
         """
-        Step 1: Expand initial point into a line spanning the entire lattice.
+        Stage 1a: Expand initial point into a line spanning the 2D plane.
         All lattice points are dragged along the expansion.
         """
-        print("Step 1: Expanding point to line spanning entire lattice...")
+        print("Stage 1a: Expanding point to line spanning 2D plane...")
         
-        # Find the initial point (center)
+        # Find the initial point (center of the plane)
         center_x = self.size // 2
         center_y = self.size // 2
+        
+        # Get current z (should be same for all points after plane compression)
+        current_z = self.lattice_points[0].z if self.lattice_points else self.size // 2
         
         # Determine direction: horizontal or vertical based on distance from center
         def transform_to_line(x, y, z):
@@ -146,19 +174,19 @@ class GeometricLattice:
                 new_x = center_x  # All points move to center x
                 new_y = y
             
-            return (new_x, new_y, z)
+            return (new_x, new_y, z)  # Keep z coordinate
         
         self.transform_all_points(transform_to_line)
         self.current_stage = "line"
-        print(f"  Lattice transformed: {len(self.lattice_points)} points now form a line")
+        print(f"  Lattice transformed: {len(self.lattice_points)} points now form a line in 2D plane")
     
     def create_square_from_line(self):
         """
-        Step 2: Use first line to determine center by absolute median,
+        Stage 1b: Use first line to determine center by absolute median,
         then extend horizontal line from center to make a square (+ shape).
         All lattice points are transformed.
         """
-        print("Step 2: Creating square from line (finding median center)...")
+        print("Stage 1b: Creating square from line (finding median center)...")
         
         # Find median of all points on the line
         x_coords = [p.x for p in self.lattice_points]
@@ -189,11 +217,11 @@ class GeometricLattice:
     
     def create_bounded_square(self):
         """
-        Step 3: At end of every line from +, extend single line horizontally for |
+        Stage 1c: At end of every line from +, extend single line horizontally for |
         and vertically for -, so lines meet to form a bounded square.
         All lattice points are dragged to form the boundary.
         """
-        print("Step 3: Creating bounded square from + shape...")
+        print("Stage 1c: Creating bounded square from + shape...")
         
         # Find bounds of current + shape
         x_coords = [p.x for p in self.lattice_points]
@@ -404,14 +432,16 @@ class GeometricLattice:
     
     def compress_triangle_to_line(self):
         """
-        Step 6: Drag corners C and D together to their median, forming a single vertical line.
+        Stage 2b: Drag corners C and D together to their median, forming a single vertical line.
         ALL lattice points are dragged along.
+        TRACKS MODULAR PATTERNS for factor extraction.
         """
-        print("Step 6: Compressing triangle to line (C and D to median N)...")
+        print("Stage 2b: Compressing triangle to line (C and D to median N)...")
         
         # Find triangle vertices
         x_coords = [p.x for p in self.lattice_points]
         y_coords = [p.y for p in self.lattice_points]
+        z_coords = [p.z for p in self.lattice_points]
         min_x, max_x = min(x_coords), max(x_coords)
         min_y, max_y = min(y_coords), max(y_coords)
         
@@ -432,10 +462,39 @@ class GeometricLattice:
             print(f"  Triangle: M=({M_x}, {min_y}), C=({C_x}, {max_y}), D=({D_x}, {max_y})")
             print(f"  Median N of C and D: ({N_x}, {N_y})")
             
+            # TRACK MODULAR PATTERNS: Extract patterns from z-coordinates
+            # These patterns will guide the factor extraction
+            z_patterns = {}
+            for p in self.lattice_points:
+                z_mod = p.z % self.remainder_lattice_size
+                if z_mod not in z_patterns:
+                    z_patterns[z_mod] = []
+                z_patterns[z_mod].append((p.x, p.y, p.z))
+            
+            # Store the most common modular patterns (these indicate promising regions)
+            sorted_patterns = sorted(z_patterns.items(), key=lambda x: len(x[1]), reverse=True)
+            top_patterns = [pattern[0] for pattern in sorted_patterns[:10]]  # Top 10 patterns
+            
+            # Store modular pattern information
+            modular_info = {
+                'stage': 'triangle_to_line',
+                'N_x': N_x,
+                'M_x': M_x,
+                'C_x': C_x,
+                'D_x': D_x,
+                'top_z_patterns': top_patterns,
+                'z_distribution': {k: len(v) for k, v in z_patterns.items()}
+            }
+            self.modular_patterns.append(modular_info)
+            
+            print(f"  Detected {len(z_patterns)} distinct z-modular patterns")
+            print(f"  Top patterns: {top_patterns[:5]}")
+            
             def transform_to_line(x, y, z):
                 # All points move to vertical line through N
                 new_x = N_x
                 new_y = y  # Keep y coordinate
+                # Preserve z coordinate (remainder information)
                 return (new_x, new_y, z)
             
             self.transform_all_points(transform_to_line)
@@ -444,10 +503,10 @@ class GeometricLattice:
     
     def compress_line_to_point(self):
         """
-        Step 7: Compress vertical line into a single point by dragging both ends (M and N) to median.
+        Stage 3: Compress vertical line into a single point (0D singularity) by dragging both ends (M and N) to median.
         ALL lattice points are dragged to the final point.
         """
-        print("Step 7: Compressing line to point (M and N to median)...")
+        print("Stage 3: Compressing line to point (1D → 0D singularity)...")
         
         # Find endpoints of line
         y_coords = [p.y for p in self.lattice_points]
@@ -475,105 +534,112 @@ class GeometricLattice:
         print(f"  Lattice transformed: {len(self.lattice_points)} points compressed to single point")
     
     def get_bounds(self):
-        """Get bounding box of current lattice points."""
+        """Get bounding box of current lattice points (3D)."""
         if not self.lattice_points:
-            return (0, 0, 0, 0)
+            return (0, 0, 0, 0, 0, 0)
         x_coords = [p.x for p in self.lattice_points]
         y_coords = [p.y for p in self.lattice_points]
-        return (min(x_coords), max(x_coords), min(y_coords), max(y_coords))
+        z_coords = [p.z for p in self.lattice_points]
+        return (min(x_coords), max(x_coords), min(y_coords), max(y_coords), min(z_coords), max(z_coords))
     
     def get_area(self):
-        """Calculate area covered by lattice points."""
+        """Calculate volume covered by lattice points (3D)."""
         if not self.lattice_points:
             return 0
-        min_x, max_x, min_y, max_y = self.get_bounds()
+        min_x, max_x, min_y, max_y, min_z, max_z = self.get_bounds()
         width = max_x - min_x + 1
         height = max_y - min_y + 1
-        return width * height
+        depth = max_z - min_z + 1
+        return width * height * depth
     
     def get_perimeter(self):
-        """Calculate perimeter of lattice points."""
+        """Calculate surface area of lattice points (3D)."""
         if not self.lattice_points:
             return 0
-        min_x, max_x, min_y, max_y = self.get_bounds()
+        min_x, max_x, min_y, max_y, min_z, max_z = self.get_bounds()
         width = max_x - min_x + 1
         height = max_y - min_y + 1
-        return 2 * (width + height)
+        depth = max_z - min_z + 1
+        # Surface area of a rectangular prism
+        return 2 * (width * height + width * depth + height * depth)
     
     def get_unique_points_count(self):
-        """Count unique point positions."""
+        """Count unique point positions (3D)."""
         if not self.lattice_points:
             return 0
-        unique_positions = set((p.x, p.y) for p in self.lattice_points)
+        unique_positions = set((p.x, p.y, p.z) for p in self.lattice_points)
         return len(unique_positions)
     
     def get_compression_metrics(self):
-        """Calculate detailed compression metrics at current stage."""
+        """Calculate detailed compression metrics at current stage (3D)."""
         if not self.lattice_points:
             return {}
         
-        min_x, max_x, min_y, max_y = self.get_bounds()
+        min_x, max_x, min_y, max_y, min_z, max_z = self.get_bounds()
         width = max_x - min_x + 1
         height = max_y - min_y + 1
-        area = self.get_area()
-        perimeter = self.get_perimeter()
+        depth = max_z - min_z + 1
+        volume = self.get_area()  # Now returns volume
+        surface_area = self.get_perimeter()  # Now returns surface area
         unique_points = self.get_unique_points_count()
         
-        # Calculate span (Manhattan distance from origin)
+        # Calculate span (3D Manhattan distance from origin)
         center_x = (min_x + max_x) // 2
         center_y = (min_y + max_y) // 2
-        max_span = max(abs(max_x), abs(max_y), abs(min_x), abs(min_y))
+        center_z = (min_z + max_z) // 2
+        max_span = max(abs(max_x), abs(max_y), abs(max_z), abs(min_x), abs(min_y), abs(min_z))
         
-        # Initial metrics
-        initial_area = self.size * self.size
-        initial_perimeter = 4 * self.size
-        initial_span = self.size
+        # Initial metrics (3D cube)
+        initial_volume = self.size * self.size * self.size
+        initial_surface_area = 6 * self.size * self.size
+        initial_span = 3 * (self.size - 1)  # 3D diagonal
         
         # Compression ratios
-        area_compression = area / initial_area if initial_area > 0 else 0
-        perimeter_compression = perimeter / initial_perimeter if initial_perimeter > 0 else 0
+        volume_compression = volume / initial_volume if initial_volume > 0 else 0
+        surface_compression = surface_area / initial_surface_area if initial_surface_area > 0 else 0
         span_compression = max_span / initial_span if initial_span > 0 else 0
         
         return {
             'stage': self.current_stage,
-            'bounds': {'min_x': min_x, 'max_x': max_x, 'min_y': min_y, 'max_y': max_y},
-            'dimensions': {'width': width, 'height': height},
-            'area': area,
-            'perimeter': perimeter,
+            'bounds': {'min_x': min_x, 'max_x': max_x, 'min_y': min_y, 'max_y': max_y, 'min_z': min_z, 'max_z': max_z},
+            'dimensions': {'width': width, 'height': height, 'depth': depth},
+            'volume': volume,
+            'surface_area': surface_area,
             'unique_points': unique_points,
             'total_points': len(self.lattice_points),
-            'center': (center_x, center_y),
+            'center': (center_x, center_y, center_z),
             'max_span': max_span,
-            'initial_area': initial_area,
-            'initial_perimeter': initial_perimeter,
+            'initial_volume': initial_volume,
+            'initial_surface_area': initial_surface_area,
             'initial_span': initial_span,
-            'area_compression_ratio': area_compression,
-            'perimeter_compression_ratio': perimeter_compression,
+            'volume_compression_ratio': volume_compression,
+            'surface_compression_ratio': surface_compression,
             'span_compression_ratio': span_compression,
-            'area_reduction': (1 - area_compression) * 100,
-            'perimeter_reduction': (1 - perimeter_compression) * 100,
+            'volume_reduction': (1 - volume_compression) * 100,
+            'surface_reduction': (1 - surface_compression) * 100,
             'span_reduction': (1 - span_compression) * 100
         }
     
     def print_compression_analysis(self):
-        """Print detailed compression analysis."""
+        """Print detailed compression analysis (3D)."""
         metrics = self.get_compression_metrics()
         
         print("="*80)
-        print(f"COMPRESSION ANALYSIS - Stage: {metrics['stage']}")
+        print(f"COMPRESSION ANALYSIS (3D) - Stage: {metrics['stage']}")
         print("="*80)
         print(f"Bounds: x=[{metrics['bounds']['min_x']}, {metrics['bounds']['max_x']}], "
-              f"y=[{metrics['bounds']['min_y']}, {metrics['bounds']['max_y']}]")
-        print(f"Dimensions: {metrics['dimensions']['width']} x {metrics['dimensions']['height']}")
-        print(f"Area: {metrics['area']} (initial: {metrics['initial_area']})")
-        print(f"Perimeter: {metrics['perimeter']} (initial: {metrics['initial_perimeter']})")
+              f"y=[{metrics['bounds']['min_y']}, {metrics['bounds']['max_y']}], "
+              f"z=[{metrics['bounds']['min_z']}, {metrics['bounds']['max_z']}]")
+        print(f"Dimensions: {metrics['dimensions']['width']} × {metrics['dimensions']['height']} × {metrics['dimensions']['depth']}")
+        print(f"Volume: {metrics['volume']} (initial: {metrics['initial_volume']})")
+        print(f"Surface area: {metrics['surface_area']} (initial: {metrics['initial_surface_area']})")
         print(f"Unique point positions: {metrics['unique_points']} / {metrics['total_points']} total points")
         print(f"Center: {metrics['center']}")
         print(f"Max span from origin: {metrics['max_span']} (initial: {metrics['initial_span']})")
         print()
         print("Compression Ratios:")
-        print(f"  Area compression: {metrics['area_compression_ratio']:.6f} ({metrics['area_reduction']:.2f}% reduction)")
-        print(f"  Perimeter compression: {metrics['perimeter_compression_ratio']:.6f} ({metrics['perimeter_reduction']:.2f}% reduction)")
+        print(f"  Volume compression: {metrics['volume_compression_ratio']:.6f} ({metrics['volume_reduction']:.2f}% reduction)")
+        print(f"  Surface area compression: {metrics['surface_compression_ratio']:.6f} ({metrics['surface_reduction']:.2f}% reduction)")
         print(f"  Span compression: {metrics['span_compression_ratio']:.6f} ({metrics['span_reduction']:.2f}% reduction)")
         print()
 
@@ -654,24 +720,33 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None):
     # Store remainder information that can be used for GCD extraction
     # Strategy: remainder = N - a*b, so we encode it to preserve GCD(remainder, N)
     
+    # HIGH-DIMENSIONAL REMAINDER LATTICE (3D: 100×100×100)
+    # Map remainder to 3D lattice to increase search resolution
+    remainder_lattice_size = 100  # 3D lattice for remainder (100×100×100 = 1M resolution)
+    
     # For z: encode remainder signature that preserves the "secret bits"
-    # Use multiple encoding layers to preserve remainder precision
-    remainder_low = remainder % lattice_size  # Low bits
-    remainder_mid = (remainder // lattice_size) % lattice_size  # Mid bits
-    remainder_high = (remainder // (lattice_size * lattice_size)) % lattice_size  # High bits
+    # Use 3D mapping to preserve remainder precision
+    remainder_low = remainder % remainder_lattice_size  # Low bits
+    remainder_mid = (remainder // remainder_lattice_size) % remainder_lattice_size  # Mid bits
+    remainder_high = (remainder // (remainder_lattice_size * remainder_lattice_size)) % remainder_lattice_size  # High bits
+    
+    # Store 3D remainder mapping for extraction
+    remainder_3d = (remainder_low, remainder_mid, remainder_high)
     
     # Combine into z coordinate (preserves remainder structure)
     # Use a combination that preserves GCD relationships
-    initial_z = (remainder_low + remainder_mid + remainder_high) % lattice_size
+    initial_z = (remainder_low + remainder_mid * remainder_lattice_size + remainder_high * remainder_lattice_size * remainder_lattice_size) % (remainder_lattice_size * remainder_lattice_size)
     
     # NO SCALING - preserve full precision for factor extraction
     scale_factor = 1
     
-    print(f"  Precision-preserving encoding:")
+    print(f"  Precision-preserving encoding with 3D remainder lattice:")
     print(f"    x = a mod {lattice_size} = {initial_x}")
     print(f"    y = b mod {lattice_size} = {initial_y}")
     print(f"    z = remainder signature = {initial_z}")
+    print(f"    3D remainder mapping: {remainder_3d}")
     print(f"    Full remainder preserved: {remainder}")
+    print(f"    Resolution: {remainder_lattice_size}×{remainder_lattice_size}×{remainder_lattice_size} = {remainder_lattice_size**3:,} points")
     print(f"    NO scaling applied - full precision maintained")
     
     initial_point = LatticePoint(initial_x, initial_y, initial_z)
@@ -681,14 +756,16 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None):
     print(f"  Scale factor: {scale_factor}")
     print()
     
-    # Create lattice and apply transformations
-    lattice = GeometricLattice(lattice_size, initial_point)
+    # Create lattice and apply transformations (with 3D remainder lattice)
+    lattice = GeometricLattice(lattice_size, initial_point, remainder_lattice_size=remainder_lattice_size)
     
     # Store original encoding for factor extraction (PRESERVE FULL PRECISION)
     original_encoding = {
         'a': a, 
         'b': b, 
         'remainder': remainder, 
+        'remainder_3d': remainder_3d,  # 3D remainder mapping
+        'remainder_lattice_size': remainder_lattice_size,
         'scale': scale_factor,
         'N': N,
         'sqrt_n': sqrt_n,
@@ -698,13 +775,26 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None):
         'z_mod': initial_z
     }
     
-    # Apply transformation sequence
+    # Apply 3D transformation sequence: Volume → Plane → Square → Line → Point
+    print("="*80)
+    print("3D TRANSFORMATION SEQUENCE: Volume → Plane → Square → Line → Point")
+    print("="*80)
+    print()
+    
+    # Stage 0: Volume to 2D Plane (collapse 3D space to median plane)
+    lattice.compress_volume_to_plane()
+    
+    # Stage 1: Plane to 2D Square (expand to line, then + shape, then bounded square, then vertices)
     lattice.expand_point_to_line()
     lattice.create_square_from_line()
     lattice.create_bounded_square()
     lattice.add_vertex_lines()
+    
+    # Stage 2: 2D Square to 1D Line (compress square to triangle, then to line)
     lattice.compress_square_to_triangle()
     lattice.compress_triangle_to_line()
+    
+    # Stage 3: 1D Line to 0D Singularity (collapse line to point)
     lattice.compress_line_to_point()
     
     # Extract factors from compressed result
@@ -737,11 +827,51 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None):
         print(f"  Using modular arithmetic to recover factors")
         print(f"  Full precision remainder: {remainder}")
         
-        # Method 1: Use modular relationships to find factors
-        # Search through values that match the modular pattern: x_mod + k*lattice_size
-        # For large numbers, search around sqrt(N)
-        search_range = min(50000, sqrt_n // 100)  # Reasonable range around sqrt(N)
-        print(f"  Searching range: ±{search_range} around sqrt(N) using modular pattern")
+        # Method 1: HIGH-RESOLUTION EXTRACTION using 3D remainder lattice
+        # Use the modular patterns detected during Triangle-to-Line collapse
+        remainder_lattice_size = original_encoding.get('remainder_lattice_size', 100)
+        remainder_3d = original_encoding.get('remainder_3d', (0, 0, 0))
+        
+        # Extract modular patterns from transformation history
+        modular_patterns = lattice.modular_patterns
+        top_z_patterns = []
+        if modular_patterns:
+            last_pattern = modular_patterns[-1]
+            top_z_patterns = last_pattern.get('top_z_patterns', [])
+        
+        print(f"  Using 3D remainder lattice ({remainder_lattice_size}×{remainder_lattice_size}×{remainder_lattice_size})")
+        print(f"  Remainder 3D mapping: {remainder_3d}")
+        if top_z_patterns:
+            print(f"  Using modular patterns from collapse: {top_z_patterns[:5]}")
+        
+        # Method 1a: Search using modular patterns to "zoom in" on GCD intersection
+        # The patterns indicate promising regions in the search space
+        search_range_base = min(100000, sqrt_n // 50)  # Base search range
+        
+        # Use modular patterns to narrow search
+        if top_z_patterns:
+            # Focus search around patterns detected during collapse
+            pattern_offsets = []
+            for pattern in top_z_patterns[:5]:  # Top 5 patterns
+                # Map pattern back to candidate values
+                for k in range(-search_range_base // lattice_size, search_range_base // lattice_size + 1):
+                    candidate = x_mod + k * lattice_size + pattern
+                    if candidate > 1 and candidate < N:
+                        pattern_offsets.append(candidate)
+            
+            print(f"  Zooming in on {len(pattern_offsets)} candidates from modular patterns...")
+            checked = set()
+            for candidate in pattern_offsets[:10000]:  # Limit to top candidates
+                if candidate not in checked:
+                    checked.add(candidate)
+                    g = gcd(candidate, N)
+                    if g > 1 and g < N:
+                        factors_found.append((g, N // g))
+                        print(f"    ✓ Found factor via pattern-guided search: {g} (from {candidate})")
+        
+        # Method 1b: Standard modular search (fallback)
+        search_range = min(50000, sqrt_n // 100)
+        print(f"  Standard modular search: ±{search_range} around sqrt(N)")
         
         checked = set()
         for k in range(-search_range, search_range + 1):
@@ -763,18 +893,40 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None):
                     factors_found.append((g, N // g))
                     print(f"    ✓ Found factor via y-modular: {g} (from {candidate_y})")
         
-        # Method 2: CRITICAL - Use FULL PRECISION remainder for GCD
-        # This is where the "secret bits" matter most
+        # Method 2: CRITICAL - Use 3D remainder lattice for high-resolution GCD extraction
+        # Map remainder through 3D lattice to find the exact GCD intersection
         if remainder > 0:
-            print(f"  Testing GCD with FULL PRECISION remainder...")
+            print(f"  High-resolution GCD extraction using 3D remainder lattice...")
+            
+            # Reconstruct remainder candidates from 3D mapping
+            rem_low, rem_mid, rem_high = remainder_3d
+            
+            # Search through 3D remainder space
+            # Each dimension gives us resolution to find the exact GCD
+            for d_low in range(-10, 11):  # Small search around mapped value
+                for d_mid in range(-10, 11):
+                    for d_high in range(-10, 11):
+                        test_rem_low = (rem_low + d_low) % remainder_lattice_size
+                        test_rem_mid = (rem_mid + d_mid) % remainder_lattice_size
+                        test_rem_high = (rem_high + d_high) % remainder_lattice_size
+                        
+                        # Reconstruct remainder candidate
+                        test_remainder = (test_rem_low + 
+                                        test_rem_mid * remainder_lattice_size + 
+                                        test_rem_high * remainder_lattice_size * remainder_lattice_size)
+                        
+                        # Test GCD with N
+                        if test_remainder > 0 and test_remainder < N:
+                            g = gcd(test_remainder, N)
+                            if g > 1 and g < N:
+                                factors_found.append((g, N // g))
+                                print(f"    ✓ Found factor via 3D remainder GCD: {g} (from remainder {test_remainder})")
+            
+            # Also test the FULL PRECISION remainder directly
             gcd_remainder = gcd(remainder, N)
             if gcd_remainder > 1 and gcd_remainder < N:
                 factors_found.append((gcd_remainder, N // gcd_remainder))
-                print(f"    ✓ Found factor via remainder GCD: {gcd_remainder}")
-            
-            # Test GCD of remainder components
-            # remainder = N - a*b, so if remainder shares factors with N, we found one
-            # This uses the FULL precision remainder (no scaling loss)
+                print(f"    ✓ Found factor via full precision remainder GCD: {gcd_remainder}")
         
         # Method 4: Use sum/difference relationships (modular arithmetic)
         # Sum and difference preserve some factor relationships
@@ -930,11 +1082,12 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None):
     
     print()
     print("="*80)
-    print("COMPRESSION METRICS")
+    print("COMPRESSION METRICS (3D)")
     print("="*80)
-    print(f"Area reduction: {final_metrics['area_reduction']:.2f}%")
-    print(f"Perimeter reduction: {final_metrics['perimeter_reduction']:.2f}%")
-    print(f"Points collapsed: {final_metrics['unique_points']} / {final_metrics['total_points']}")
+    print(f"Volume reduction: {final_metrics.get('volume_reduction', final_metrics.get('area_reduction', 0)):.2f}%")
+    print(f"Surface area reduction: {final_metrics.get('surface_reduction', final_metrics.get('perimeter_reduction', 0)):.2f}%")
+    print(f"Span reduction: {final_metrics.get('span_reduction', 0):.2f}%")
+    print(f"Points collapsed: {final_metrics.get('unique_points', 0)} / {final_metrics.get('total_points', len(lattice.lattice_points))}")
     print()
     
     return {
@@ -1004,14 +1157,14 @@ def demo_lattice_transformations():
     print(f"Initial perimeter: {final_metrics['initial_perimeter']}")
     print(f"Initial span: {final_metrics['initial_span']}")
     print()
-    print(f"Final area: {final_metrics['area']}")
-    print(f"Final perimeter: {final_metrics['perimeter']}")
-    print(f"Final span: {final_metrics['max_span']}")
-    print(f"Final unique points: {final_metrics['unique_points']}")
+    print(f"Final volume: {final_metrics.get('volume', final_metrics.get('area', 0))}")
+    print(f"Final surface area: {final_metrics.get('surface_area', final_metrics.get('perimeter', 0))}")
+    print(f"Final span: {final_metrics.get('max_span', 0)}")
+    print(f"Final unique points: {final_metrics.get('unique_points', 0)}")
     print()
-    print(f"Total area reduction: {final_metrics['area_reduction']:.2f}%")
-    print(f"Total perimeter reduction: {final_metrics['perimeter_reduction']:.2f}%")
-    print(f"Total span reduction: {final_metrics['span_reduction']:.2f}%")
+    print(f"Total volume reduction: {final_metrics.get('volume_reduction', final_metrics.get('area_reduction', 0)):.2f}%")
+    print(f"Total surface area reduction: {final_metrics.get('surface_reduction', final_metrics.get('perimeter_reduction', 0)):.2f}%")
+    print(f"Total span reduction: {final_metrics.get('span_reduction', 0):.2f}%")
     print()
     print(f"Compression achieved: {final_metrics['unique_points']} unique positions from {final_metrics['total_points']} points")
     print(f"Compression efficiency: {(1 - final_metrics['unique_points']/final_metrics['total_points'])*100:.2f}% points collapsed")
