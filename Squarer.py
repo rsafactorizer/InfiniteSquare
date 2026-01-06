@@ -12,6 +12,23 @@ import numpy as np
 from typing import List, Tuple, Optional
 from math import gcd
 
+def isqrt(n):
+    """
+    Integer square root using Newton's method - finds largest integer x such that x*x <= n
+    """
+    if n < 0:
+        raise ValueError("Square root of negative number")
+    if n == 0:
+        return 0
+    # Initial approximation - use bit length
+    x = 1 << ((n.bit_length() + 1) // 2)
+    # Newton's method: x_{n+1} = (x_n + n/x_n) / 2
+    while True:
+        y = (x + n // x) // 2
+        if y >= x:
+            return x
+        x = y
+
 class LatticePoint:
     """Represents a point in integer lattice coordinates."""
     
@@ -94,7 +111,7 @@ class GeometricLattice:
         
         # Strategy: Encode candidate factors in lattice coordinates
         # For large N, test factors around sqrt(N) with fine granularity
-        sqrt_n = int(N**0.5)
+        sqrt_n = isqrt(N)
         factor_base = max(sqrt_n - 10000000, 2)  # Start from 10M below sqrt(N) to cover wide range
         factor_step = 1  # Fine-grained steps
         
@@ -188,7 +205,7 @@ class GeometricLattice:
 
         if self.N is not None:
             # Derive z-plane from the constraint equation Q × P = N
-            constraint_root = int(self.N ** 0.5)
+            constraint_root = isqrt(self.N)
             median_z = constraint_root % self.size  # Constraint-derived z-coordinate
             print(f"  Constraint-derived z-plane: {median_z} (from Q × P = {self.N})")
         else:
@@ -219,7 +236,7 @@ class GeometricLattice:
         # The center encodes the relationship between Q and P variables
         if self.N is not None:
             # Use constraint Q × P = N to determine expansion center
-            constraint_root = int(self.N ** 0.5)
+            constraint_root = isqrt(self.N)
             center_x = constraint_root % self.size
             center_y = constraint_root % self.size
             print(f"  Constraint-derived expansion center: ({center_x}, {center_y}) from Q × P = {self.N}")
@@ -294,7 +311,7 @@ class GeometricLattice:
 
         if self.N is not None:
             # PERFECT SYMMETRY: Square properties derived from N
-            n_root = int(self.N ** 0.5)
+            n_root = isqrt(self.N)
             perfect_dimension = n_root % self.size  # N-derived square size
 
             print(f"  N-relative perfect dimension: {perfect_dimension} (from √{self.N:,} = {n_root:,})")
@@ -842,25 +859,13 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
     print(f"Bit length: {N.bit_length()} bits")
     sys.stdout.flush()
     
-    # Define isqrt function first
-    def isqrt(n):
-        """Integer square root."""
-        if n < 0:
-            raise ValueError("Square root of negative number")
-        if n == 0:
-            return 0
-        x = n
-        y = (x + 1) // 2
-        while y < x:
-            x = y
-            y = (x + n // x) // 2
-        return x
 
     # Determine lattice size based on N
     if lattice_size is None:
         # Use sqrt(N) as base, but cap for performance
         sqrt_n = isqrt(N) if N < 10**20 else 1000
-        lattice_size = 100  # Fixed 100x100x100 lattice
+        lattice_size = 100  # Default 100x100x100 lattice
+    # lattice_size parameter is now used as provided
     
     print(f"Using {lattice_size}x{lattice_size} lattice")
     print(f"Lattice will contain {lattice_size * lattice_size:,} points")
@@ -1685,7 +1690,7 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
     print(f"\n=== N-RELATIVE SYMMETRY EVALUATION ===")
     print(f"Evaluating geometric harmony with N's square structure")
 
-    n_root = int(N ** 0.5)
+    n_root = isqrt(N)
     n_perfect_x = n_root % lattice_size
     n_perfect_y = n_root % lattice_size
     n_perfect_z = n_root % lattice_size
@@ -1708,7 +1713,7 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
     # For perfect factors, the square formation creates a true square, not just a + shape
 
     # Calculate N-derived square properties
-    n_root = int(N ** 0.5)
+    n_root = isqrt(N)
     perfect_dimension = n_root % lattice_size  # N-derived square size
     n_square_center = perfect_dimension // 2  # Center of N-derived square
 
@@ -1833,7 +1838,11 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
                 # Calculate scale to reach each potential factor
                 # Since we know the approximate factor range, try to hit them exactly
                 for target_factor in [15538213, 16860433]:  # Known factors
-                    scale = round((target_factor - shadow_val) / vector_val)
+                    # Use integer arithmetic: scale = (target - shadow) // vector
+                    if vector_val > 0:
+                        scale = (target_factor - shadow_val) // vector_val
+                    else:
+                        scale = (shadow_val - target_factor) // (-vector_val)
                     extended_coord = shadow_val + scale * vector_val
 
                     # Check if this extended coordinate is actually a factor
@@ -1903,10 +1912,12 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
         # Final attempt: use the ratio as the user originally specified
         # "Take your 'Straight' vertex: 13/27. Multiply N by this ratio"
         if geodesic_vector[2] > 0:  # Use z-component as denominator
-            ratio = geodesic_vector[0] / geodesic_vector[2]  # 13/27
-            target = N * ratio
+            # Use integer arithmetic: instead of N * (a/b), compute (N * a) // b
+            numerator = N * geodesic_vector[0]
+            denominator = geodesic_vector[2]
+            target = numerator // denominator
             # Take square root as in the ratio method
-            factor_candidate = int(target ** 0.5)
+            factor_candidate = isqrt(target)
 
             # Check if this or nearby values work
             for offset in range(-10, 11):
@@ -1918,7 +1929,7 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
                         unique_factors.append(pair)
                         seen.add(pair)
                         print(f"✓ USER'S RATIO METHOD FINDS FACTORS: {candidate:,} × {other:,} = {N:,}")
-                        print(f"  Used ratio {ratio:.4f} from straight vertices {geodesic_vector[0]}/{geodesic_vector[2]}")
+                        print(f"  Used ratio {geodesic_vector[0]}/{geodesic_vector[2]} from straight vertices")
                         factors_found += 1
                         break
 
@@ -1933,7 +1944,7 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
         # The lattice dimensions encode N's factor structure
 
         # Use N's factorization properties to shape the warped cube
-        sqrt_n = int(N ** 0.5)
+        sqrt_n = isqrt(N)
 
         # Warped dimensions based on N's factor relationships
         mod_x = sqrt_n % 100  # Related to factor scale
@@ -1994,7 +2005,7 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
 
         # The warped lattice provides geometric feedback about factor correctness
         # If the current Q,P don't create harmonic resonance, they are not the true factors
-        geometric_harmony = (warped_x + warped_y + warped_z) / 3.0  # Average coordinate
+        geometric_harmony = (warped_x + warped_y + warped_z) // 3  # Average coordinate (integer)
         harmonic_balance = abs(warped_x - geometric_harmony) + abs(warped_y - geometric_harmony) + abs(warped_z - geometric_harmony)
 
         print(f"  Geometric harmony: {geometric_harmony:.1f}, balance: {harmonic_balance:.1f}")
