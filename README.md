@@ -1,5 +1,5 @@
 # Note
-Itrations are set to 100, for large N you need many iterations to compress and filter out the garbage.
+Iterations are set to 100, for large N you need many iterations to compress and filter out the garbage.
 
 Luckily it only takes 3 seconds to run a iteration...
 
