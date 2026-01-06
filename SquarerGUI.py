@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Modern GUI for Geometric Lattice Factorization Tool
+Modern Comprehensive GUI for Geometric Lattice Factorization Tool
+Dark theme with 160° hue (cyan/teal) accent colors
 """
 
 import tkinter as tk
@@ -8,22 +9,35 @@ from tkinter import ttk, scrolledtext, messagebox, filedialog
 import threading
 import queue
 import sys
-from io import StringIO
-from Squarer import factor_with_lattice_compression, LatticePoint, GeometricLattice
+from Squarer import factor_with_lattice_compression
 
-class FactorizationGUI:
+class SquarerGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Geometric Lattice Factorization Tool")
-        self.root.geometry("1400x900")
-        self.root.configure(bg='#1e1e1e')
+        self.root.title("Geometric Lattice Factorization Engine")
+        self.root.geometry("1600x1000")
         
-        # Style configuration
-        self.setup_styles()
+        # Color scheme: Dark theme with 160° hue (cyan/teal)
+        self.colors = {
+            'bg': '#0a0e14',           # Very dark blue-black
+            'panel': '#11151c',        # Slightly lighter panel
+            'border': '#1a2332',       # Border color
+            'text': '#e0f2f1',         # Light text
+            'text_dim': '#9ca3af',     # Dimmed text
+            'accent': '#00d4aa',       # 160° hue cyan/teal
+            'accent_light': '#00ffcc', # Lighter accent
+            'accent_dark': '#00a67f',  # Darker accent
+            'success': '#00ff88',      # Success green
+            'error': '#ff4444',        # Error red
+            'warning': '#ffaa00',      # Warning orange
+            'info': '#00d4ff',         # Info cyan
+        }
+        
+        self.root.configure(bg=self.colors['bg'])
         
         # Control variables
         self.is_running = False
-        self.output_queue = queue.Queue()
+        self.output_queue = queue.Queue(maxsize=10000)
         self.worker_thread = None
         
         # Create UI
@@ -32,54 +46,45 @@ class FactorizationGUI:
         # Start output monitor
         self.monitor_output()
     
-    def setup_styles(self):
-        """Configure modern styling."""
-        style = ttk.Style()
-        style.theme_use('clam')
-        
-        # Configure colors
-        style.configure('Title.TLabel', 
-                       background='#1e1e1e', 
-                       foreground='#00ff88',
-                       font=('Segoe UI', 16, 'bold'))
-        
-        style.configure('Heading.TLabel',
-                       background='#1e1e1e',
-                       foreground='#ffffff',
-                       font=('Segoe UI', 11, 'bold'))
-        
-        style.configure('Info.TLabel',
-                       background='#1e1e1e',
-                       foreground='#cccccc',
-                       font=('Segoe UI', 9))
-        
-        style.configure('Modern.TButton',
-                       font=('Segoe UI', 10),
-                       padding=10)
-        
-        style.configure('Modern.TFrame',
-                       background='#2d2d2d',
-                       relief='flat')
-    
     def create_widgets(self):
         """Create and layout all GUI widgets."""
         # Main container
-        main_frame = tk.Frame(self.root, bg='#1e1e1e')
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        main_frame = tk.Frame(self.root, bg=self.colors['bg'])
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
         
-        # Title
-        title = ttk.Label(main_frame, 
-                         text="🔷 Geometric Lattice Factorization Engine",
-                         style='Title.TLabel')
-        title.pack(pady=(0, 20))
+        # Title bar
+        title_frame = tk.Frame(main_frame, bg=self.colors['bg'])
+        title_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        title = tk.Label(
+            title_frame,
+            text="🔷 Geometric Lattice Factorization Engine",
+            font=('Segoe UI', 24, 'bold'),
+            bg=self.colors['bg'],
+            fg=self.colors['accent']
+        )
+        title.pack()
+        
+        subtitle = tk.Label(
+            title_frame,
+            text="3D Lattice Compression with Modular Carry & Recursive Refinement",
+            font=('Segoe UI', 11),
+            bg=self.colors['bg'],
+            fg=self.colors['text_dim']
+        )
+        subtitle.pack(pady=(5, 0))
+        
+        # Content area: Left panel (controls) + Right panel (output)
+        content_frame = tk.Frame(main_frame, bg=self.colors['bg'])
+        content_frame.pack(fill=tk.BOTH, expand=True)
         
         # Left panel - Controls
-        left_panel = tk.Frame(main_frame, bg='#2d2d2d', relief='flat', bd=0)
-        left_panel.pack(side=tk.LEFT, fill=tk.BOTH, padx=(0, 10), expand=False)
-        left_panel.config(width=400)
+        left_panel = tk.Frame(content_frame, bg=self.colors['panel'], relief='flat', bd=0)
+        left_panel.pack(side=tk.LEFT, fill=tk.BOTH, padx=(0, 15), expand=False)
+        left_panel.config(width=450)
         
         # Right panel - Output
-        right_panel = tk.Frame(main_frame, bg='#1e1e1e')
+        right_panel = tk.Frame(content_frame, bg=self.colors['bg'])
         right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
         
         self.create_control_panel(left_panel)
@@ -88,149 +93,227 @@ class FactorizationGUI:
     def create_control_panel(self, parent):
         """Create the control panel with input fields."""
         # Input section
-        input_frame = tk.Frame(parent, bg='#2d2d2d')
-        input_frame.pack(fill=tk.X, padx=15, pady=15)
-        
-        ttk.Label(input_frame, 
-                 text="Input Parameters",
-                 style='Heading.TLabel').pack(anchor='w', pady=(0, 10))
+        input_frame = self.create_section(parent, "Input Parameters", 0)
         
         # N input
-        n_frame = tk.Frame(input_frame, bg='#2d2d2d')
-        n_frame.pack(fill=tk.X, pady=5)
-        ttk.Label(n_frame, text="Number to Factor (N):", 
-                 style='Info.TLabel').pack(anchor='w')
+        n_label = tk.Label(input_frame, text="Number to Factor (N):", 
+                          font=('Segoe UI', 10, 'bold'),
+                          bg=self.colors['panel'], fg=self.colors['text'])
+        n_label.pack(anchor='w', pady=(0, 5))
         
-        self.n_entry = tk.Text(n_frame, height=4, width=45,
-                              bg='#1e1e1e', fg='#00ff88',
-                              font=('Consolas', 10),
-                              insertbackground='#00ff88',
-                              relief='flat', bd=2)
-        self.n_entry.pack(fill=tk.X, pady=(5, 0))
+        self.n_entry = tk.Text(input_frame, height=4, width=50,
+                              bg='#0d1117', fg=self.colors['accent'],
+                              font=('Consolas', 11),
+                              insertbackground=self.colors['accent'],
+                              relief='flat', bd=2, highlightthickness=1,
+                              highlightbackground=self.colors['border'],
+                              highlightcolor=self.colors['accent'])
+        self.n_entry.pack(fill=tk.X, pady=(0, 10))
         self.n_entry.insert('1.0', '35')
         
         # Load from file button
-        load_btn = tk.Button(n_frame, text="📁 Load from File",
+        load_btn = tk.Button(input_frame, text="📁 Load from File",
                             command=self.load_from_file,
-                            bg='#3d3d3d', fg='#ffffff',
+                            bg=self.colors['border'], fg=self.colors['text'],
                             font=('Segoe UI', 9),
                             relief='flat', cursor='hand2',
-                            activebackground='#4d4d4d')
-        load_btn.pack(anchor='w', pady=(5, 0))
+                            activebackground=self.colors['accent_dark'],
+                            activeforeground='#ffffff',
+                            padx=15, pady=5)
+        load_btn.pack(anchor='w', pady=(0, 15))
         
         # Lattice size
-        lattice_frame = tk.Frame(input_frame, bg='#2d2d2d')
-        lattice_frame.pack(fill=tk.X, pady=10)
-        ttk.Label(lattice_frame, text="Initial Lattice Size:",
-                 style='Info.TLabel').pack(anchor='w')
+        lattice_label = tk.Label(input_frame, text="Initial Lattice Size:",
+                               font=('Segoe UI', 10, 'bold'),
+                               bg=self.colors['panel'], fg=self.colors['text'])
+        lattice_label.pack(anchor='w', pady=(0, 5))
+        
+        lattice_frame = tk.Frame(input_frame, bg=self.colors['panel'])
+        lattice_frame.pack(fill=tk.X, pady=(0, 15))
         
         self.lattice_size_var = tk.StringVar(value="100")
         lattice_spin = ttk.Spinbox(lattice_frame, from_=10, to=1000,
                                   textvariable=self.lattice_size_var,
-                                  width=20, font=('Segoe UI', 10))
-        lattice_spin.pack(anchor='w', pady=(5, 0))
+                                  width=25, font=('Segoe UI', 10))
+        lattice_spin.pack(side=tk.LEFT)
         
         # Iterations
-        iter_frame = tk.Frame(input_frame, bg='#2d2d2d')
-        iter_frame.pack(fill=tk.X, pady=10)
-        ttk.Label(iter_frame, text="Recursive Refinement Iterations:",
-                 style='Info.TLabel').pack(anchor='w')
+        iter_label = tk.Label(input_frame, text="Recursive Refinement Iterations:",
+                            font=('Segoe UI', 10, 'bold'),
+                            bg=self.colors['panel'], fg=self.colors['text'])
+        iter_label.pack(anchor='w', pady=(15, 5))
         
-        self.iterations_var = tk.StringVar(value="10")
-        iter_scale = tk.Scale(iter_frame, from_=1, to=1000,
+        self.iterations_var = tk.IntVar(value=10)
+        iter_scale = tk.Scale(input_frame, from_=1, to=100,
                              orient=tk.HORIZONTAL,
                              variable=self.iterations_var,
-                             bg='#2d2d2d', fg='#ffffff',
-                             troughcolor='#1e1e1e',
-                             activebackground='#00ff88',
+                             bg=self.colors['panel'], fg=self.colors['text'],
+                             troughcolor=self.colors['bg'],
+                             activebackground=self.colors['accent'],
+                             highlightbackground=self.colors['panel'],
                              font=('Segoe UI', 9),
-                             length=350)
-        iter_scale.pack(fill=tk.X, pady=(5, 0))
+                             length=400)
+        iter_scale.pack(fill=tk.X, pady=(0, 5))
         
-        iter_label = ttk.Label(iter_frame, 
-                              textvariable=self.iterations_var,
-                              style='Info.TLabel')
-        iter_label.pack(anchor='w')
+        iter_value_label = tk.Label(input_frame, 
+                                   textvariable=tk.StringVar(value="10"),
+                                   font=('Segoe UI', 9),
+                                   bg=self.colors['panel'], fg=self.colors['accent'])
+        iter_value_label.pack(anchor='w')
+        
+        # Update label when scale changes
+        def update_iter_label(val):
+            iter_value_label.config(text=str(int(float(val))))
+        iter_scale.config(command=update_iter_label)
+        
+        # GCD Search Window
+        search_label = tk.Label(input_frame, text="GCD Search Window Size:",
+                              font=('Segoe UI', 10, 'bold'),
+                              bg=self.colors['panel'], fg=self.colors['text'])
+        search_label.pack(anchor='w', pady=(15, 5))
+        
+        search_frame = tk.Frame(input_frame, bg=self.colors['panel'])
+        search_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        self.search_window_var = tk.StringVar(value="10000")
+        search_spin = ttk.Spinbox(search_frame, from_=100, to=1000000,
+                                 textvariable=self.search_window_var,
+                                 width=25, font=('Segoe UI', 10),
+                                 increment=1000)
+        search_spin.pack(side=tk.LEFT)
+        
+        search_hint = tk.Label(input_frame, 
+                             text="Range: ±N (e.g., 10000 = search ±10000 around target)",
+                             font=('Segoe UI', 8),
+                             bg=self.colors['panel'], fg=self.colors['text_dim'])
+        search_hint.pack(anchor='w', pady=(0, 15))
+        
+        # Lattice Offset
+        offset_label = tk.Label(input_frame, text="Lattice Offset (X, Y, Z):",
+                              font=('Segoe UI', 10, 'bold'),
+                              bg=self.colors['panel'], fg=self.colors['text'])
+        offset_label.pack(anchor='w', pady=(0, 5))
+        
+        offset_frame = tk.Frame(input_frame, bg=self.colors['panel'])
+        offset_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        self.offset_x_var = tk.StringVar(value="0")
+        self.offset_y_var = tk.StringVar(value="0")
+        self.offset_z_var = tk.StringVar(value="0")
+        
+        for i, (label, var) in enumerate([("X:", self.offset_x_var), 
+                                          ("Y:", self.offset_y_var), 
+                                          ("Z:", self.offset_z_var)]):
+            tk.Label(offset_frame, text=label, 
+                    font=('Segoe UI', 9),
+                    bg=self.colors['panel'], fg=self.colors['text'],
+                    width=3).grid(row=0, column=i*2, padx=(0, 5))
+            ttk.Spinbox(offset_frame, from_=-10, to=10, textvariable=var,
+                       width=8, font=('Segoe UI', 9)).grid(row=0, column=i*2+1, padx=(0, 15))
+        
+        offset_hint = tk.Label(input_frame, 
+                              text="Small offsets break symmetry traps (try ±1 to ±5)",
+                              font=('Segoe UI', 8),
+                              bg=self.colors['panel'], fg=self.colors['text_dim'])
+        offset_hint.pack(anchor='w', pady=(0, 20))
         
         # Control buttons
-        button_frame = tk.Frame(input_frame, bg='#2d2d2d')
-        button_frame.pack(fill=tk.X, pady=20)
+        button_frame = tk.Frame(input_frame, bg=self.colors['panel'])
+        button_frame.pack(fill=tk.X, pady=(10, 0))
         
         self.start_btn = tk.Button(button_frame, text="▶ Start Factorization",
                                    command=self.start_factorization,
-                                   bg='#00aa55', fg='#ffffff',
-                                   font=('Segoe UI', 11, 'bold'),
+                                   bg=self.colors['accent'], fg='#000000',
+                                   font=('Segoe UI', 12, 'bold'),
                                    relief='flat', cursor='hand2',
-                                   activebackground='#00cc66',
-                                   padx=20, pady=12)
+                                   activebackground=self.colors['accent_light'],
+                                   padx=25, pady=15)
         self.start_btn.pack(fill=tk.X, pady=(0, 10))
         
         self.stop_btn = tk.Button(button_frame, text="⏹ Stop",
                                   command=self.stop_factorization,
-                                  bg='#cc3333', fg='#ffffff',
-                                  font=('Segoe UI', 10),
+                                  bg=self.colors['error'], fg='#ffffff',
+                                  font=('Segoe UI', 10, 'bold'),
                                   relief='flat', cursor='hand2',
-                                  activebackground='#dd4444',
-                                  state=tk.DISABLED)
-        self.stop_btn.pack(fill=tk.X)
+                                  activebackground='#ff6666',
+                                  state=tk.DISABLED,
+                                  padx=25, pady=12)
+        self.stop_btn.pack(fill=tk.X, pady=(0, 10))
         
-        # Clear button
         clear_btn = tk.Button(button_frame, text="🗑 Clear Output",
                              command=self.clear_output,
-                             bg='#555555', fg='#ffffff',
-                             font=('Segoe UI', 9),
+                             bg=self.colors['border'], fg=self.colors['text'],
+                             font=('Segoe UI', 10),
                              relief='flat', cursor='hand2',
-                             activebackground='#666666')
-        clear_btn.pack(fill=tk.X, pady=(10, 0))
+                             activebackground=self.colors['accent_dark'],
+                             padx=25, pady=10)
+        clear_btn.pack(fill=tk.X)
         
         # Status section
-        status_frame = tk.Frame(parent, bg='#2d2d2d')
-        status_frame.pack(fill=tk.X, padx=15, pady=15)
+        status_frame = self.create_section(parent, "Status", 15)
         
-        ttk.Label(status_frame, text="Status",
-                 style='Heading.TLabel').pack(anchor='w', pady=(0, 10))
-        
-        self.status_label = ttk.Label(status_frame,
+        self.status_label = tk.Label(status_frame,
                                      text="Ready",
-                                     style='Info.TLabel',
-                                     foreground='#00ff88')
-        self.status_label.pack(anchor='w')
+                                     font=('Segoe UI', 11, 'bold'),
+                                     bg=self.colors['panel'],
+                                     fg=self.colors['accent'])
+        self.status_label.pack(anchor='w', pady=(0, 10))
         
         # Progress bar
         self.progress = ttk.Progressbar(status_frame, mode='indeterminate',
-                                      length=350)
-        self.progress.pack(fill=tk.X, pady=(10, 0))
+                                      length=400)
+        self.progress.pack(fill=tk.X)
+    
+    def create_section(self, parent, title, top_pad):
+        """Create a section frame with title."""
+        frame = tk.Frame(parent, bg=self.colors['panel'], relief='flat', bd=0)
+        frame.pack(fill=tk.X, padx=15, pady=(top_pad, 15))
+        
+        title_label = tk.Label(frame, text=title,
+                              font=('Segoe UI', 12, 'bold'),
+                              bg=self.colors['panel'],
+                              fg=self.colors['accent'])
+        title_label.pack(anchor='w', pady=(0, 15))
+        
+        return frame
     
     def create_output_panel(self, parent):
         """Create the output display panel."""
-        # Output section
-        output_frame = tk.Frame(parent, bg='#1e1e1e')
-        output_frame.pack(fill=tk.BOTH, expand=True)
+        # Output header
+        header_frame = tk.Frame(parent, bg=self.colors['bg'])
+        header_frame.pack(fill=tk.X, pady=(0, 10))
         
-        ttk.Label(output_frame, text="Output & Results",
-                 style='Heading.TLabel').pack(anchor='w', pady=(0, 10))
+        output_title = tk.Label(header_frame, text="Output & Results",
+                               font=('Segoe UI', 14, 'bold'),
+                               bg=self.colors['bg'],
+                               fg=self.colors['accent'])
+        output_title.pack(side=tk.LEFT)
         
-        # Output text area with larger font for better readability
+        # Output text area
         self.output_text = scrolledtext.ScrolledText(
-            output_frame,
-            bg='#1e1e1e',
-            fg='#00ff88',
+            parent,
+            bg='#0d1117',
+            fg=self.colors['accent'],
             font=('Consolas', 10),
-            insertbackground='#00ff88',
+            insertbackground=self.colors['accent'],
             relief='flat',
             wrap=tk.WORD,
-            padx=15,
-            pady=15,
-            tabs=('1c', '2c', '3c', '4c')  # Tab stops for formatting
+            padx=20,
+            pady=20,
+            highlightthickness=1,
+            highlightbackground=self.colors['border'],
+            highlightcolor=self.colors['accent']
         )
         self.output_text.pack(fill=tk.BOTH, expand=True)
         
-        # Configure tags for colored output with enhanced styling
-        self.output_text.tag_config('success', foreground='#00ff88', font=('Consolas', 10))
-        self.output_text.tag_config('error', foreground='#ff4444', font=('Consolas', 10, 'bold'))
-        self.output_text.tag_config('warning', foreground='#ffaa00', font=('Consolas', 10))
-        self.output_text.tag_config('info', foreground='#88ccff', font=('Consolas', 10))
-        self.output_text.tag_config('factor', foreground='#ffff00', font=('Consolas', 11, 'bold'))
+        # Configure tags for colored output
+        self.output_text.tag_config('success', foreground=self.colors['success'])
+        self.output_text.tag_config('error', foreground=self.colors['error'])
+        self.output_text.tag_config('warning', foreground=self.colors['warning'])
+        self.output_text.tag_config('info', foreground=self.colors['info'])
+        self.output_text.tag_config('factor', foreground=self.colors['accent_light'], 
+                                   font=('Consolas', 11, 'bold'))
+        self.output_text.tag_config('accent', foreground=self.colors['accent'])
     
     def load_from_file(self):
         """Load N from a file."""
@@ -244,7 +327,7 @@ class FactorizationGUI:
                     content = f.read().strip()
                     self.n_entry.delete('1.0', tk.END)
                     self.n_entry.insert('1.0', content)
-                    self.log_output(f"Loaded N from {filename}\n", 'info')
+                    self.log_output(f"✓ Loaded N from {filename}\n", 'success')
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load file: {e}")
     
@@ -281,37 +364,52 @@ class FactorizationGUI:
             messagebox.showerror("Error", "Invalid lattice size.")
             return
         
+        iterations = self.iterations_var.get()
+        
         try:
-            iterations = int(self.iterations_var.get())
+            search_window = int(self.search_window_var.get())
+            if search_window < 100:
+                messagebox.showerror("Error", "Search window must be at least 100.")
+                return
         except ValueError:
-            messagebox.showerror("Error", "Invalid iteration count.")
+            messagebox.showerror("Error", "Invalid search window size.")
+            return
+        
+        try:
+            offset_x = int(self.offset_x_var.get())
+            offset_y = int(self.offset_y_var.get())
+            offset_z = int(self.offset_z_var.get())
+            lattice_offset = (offset_x, offset_y, offset_z)
+        except ValueError:
+            messagebox.showerror("Error", "Invalid lattice offset values.")
             return
         
         # Update UI
         self.is_running = True
         self.start_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
-        self.status_label.config(text="Running...", foreground='#00ff88')
+        self.status_label.config(text="Running...", fg=self.colors['accent'])
         self.progress.start()
         
         # Clear output
         self.clear_output()
-        self.log_output("="*80 + "\n", 'info')
-        self.log_output("🔷 GEOMETRIC LATTICE FACTORIZATION ENGINE 🔷\n", 'info')
-        self.log_output("="*80 + "\n\n", 'info')
+        self.log_output("="*80 + "\n", 'accent')
+        self.log_output("GEOMETRIC LATTICE FACTORIZATION ENGINE\n", 'accent')
+        self.log_output("="*80 + "\n\n", 'accent')
         self.log_output(f"📊 Configuration:\n", 'info')
-        self.log_output(f"   Target N: {N}\n", 'info')
+        self.log_output(f"   Target N: {N}\n", 'accent')
         self.log_output(f"   Bit length: {N.bit_length()} bits\n", 'info')
-        self.log_output(f"   Initial lattice size: {lattice_size}×{lattice_size}×{lattice_size} = {lattice_size**3:,} points\n", 'info')
+        self.log_output(f"   Initial lattice size: {lattice_size}×{lattice_size}×{lattice_size}\n", 'info')
         self.log_output(f"   Recursive refinement iterations: {iterations}\n", 'info')
-        self.log_output(f"   Expected zoom factor: 10^{iterations * 6}\n", 'info')
-        self.log_output(f"\n{'='*80}\n", 'info')
+        self.log_output(f"   GCD search window: ±{search_window}\n", 'info')
+        self.log_output(f"   Lattice offset: {lattice_offset}\n", 'info')
+        self.log_output(f"\n{'='*80}\n", 'accent')
         self.log_output("🚀 Starting factorization process...\n\n", 'info')
         
         # Start worker thread
         self.worker_thread = threading.Thread(
             target=self.factorization_worker,
-            args=(N, lattice_size, iterations),
+            args=(N, lattice_size, iterations, search_window, lattice_offset),
             daemon=True
         )
         self.worker_thread.start()
@@ -319,46 +417,57 @@ class FactorizationGUI:
     def stop_factorization(self):
         """Stop the factorization process."""
         self.is_running = False
-        self.status_label.config(text="Stopping...", foreground='#ffaa00')
-        # Note: Actual stopping would require more complex thread management
+        self.status_label.config(text="Stopping...", fg=self.colors['warning'])
     
-    def factorization_worker(self, N, lattice_size, iterations):
+    def factorization_worker(self, N, lattice_size, iterations, search_window, lattice_offset):
         """Worker thread for factorization with verbose real-time output."""
         try:
-            # Create a custom stdout that writes to queue in real-time
+            # Create a custom stdout that writes to queue immediately
             class QueueWriter:
                 def __init__(self, queue):
                     self.queue = queue
-                    self.buffer = ""
                 
                 def write(self, text):
-                    self.buffer += text
-                    # Send complete lines to queue
-                    while '\n' in self.buffer:
-                        line, self.buffer = self.buffer.split('\n', 1)
-                        self.queue.put(('output', line + '\n'))
-                    # Also send any remaining text
-                    if self.buffer and len(self.buffer) > 100:
-                        self.queue.put(('output', self.buffer))
-                        self.buffer = ""
+                    if text:
+                        try:
+                            self.queue.put(('output', text), block=False)
+                        except queue.Full:
+                            pass
                 
                 def flush(self):
-                    if self.buffer:
-                        self.queue.put(('output', self.buffer))
-                        self.buffer = ""
+                    pass
+            
+            # Send initial messages BEFORE redirecting stdout
+            try:
+                self.output_queue.put(('status', 'Initializing factorization...'), block=False)
+                self.output_queue.put(('output', f'[CONFIG] Using {iterations} recursive refinement iterations\n'), block=False)
+                self.output_queue.put(('output', f'[CONFIG] GCD search window: ±{search_window}\n'), block=False)
+                self.output_queue.put(('output', f'[CONFIG] Lattice offset: {lattice_offset}\n'), block=False)
+            except queue.Full:
+                pass
             
             # Redirect stdout to queue writer
             old_stdout = sys.stdout
             queue_writer = QueueWriter(self.output_queue)
             sys.stdout = queue_writer
             
-            # Send initial status
-            self.output_queue.put(('status', 'Initializing factorization...'))
+            # Force immediate flush
+            sys.stdout.flush()
             
-            # Call factorization with custom iterations
-            self.output_queue.put(('status', f'Starting factorization with {iterations} iterations...'))
-            self.output_queue.put(('output', f'[CONFIG] Using {iterations} recursive refinement iterations\n'))
-            result = factor_with_lattice_compression(N, lattice_size=lattice_size, zoom_iterations=iterations)
+            # Send status update
+            try:
+                self.output_queue.put(('status', 'Running factorization...'), block=False)
+            except queue.Full:
+                pass
+            
+            # Call factorization
+            result = factor_with_lattice_compression(
+                N, 
+                lattice_size=lattice_size, 
+                zoom_iterations=iterations, 
+                search_window_size=search_window, 
+                lattice_offset=lattice_offset
+            )
             
             # Flush any remaining output
             queue_writer.flush()
@@ -381,26 +490,34 @@ class FactorizationGUI:
     def monitor_output(self):
         """Monitor output queue and update UI with verbose real-time updates."""
         try:
-            while True:
-                msg_type, data = self.output_queue.get_nowait()
+            # Process multiple messages per cycle
+            for _ in range(100):
+                try:
+                    msg_type, data = self.output_queue.get_nowait()
+                except queue.Empty:
+                    break
                 
                 if msg_type == 'output':
                     # Auto-detect message types for color coding
-                    if '✓' in data or 'FACTORS FOUND' in data or 'Found factor' in data:
+                    data_lower = data.lower()
+                    if '✓' in data or 'factors found' in data_lower or 'found factor' in data_lower:
                         self.log_output(data, 'success')
-                    elif 'ERROR' in data or 'Error' in data or 'Traceback' in data:
+                    elif 'error' in data_lower or 'traceback' in data_lower or 'exception' in data_lower:
                         self.log_output(data, 'error')
-                    elif 'Warning' in data or 'WARNING' in data:
+                    elif 'warning' in data_lower:
                         self.log_output(data, 'warning')
-                    elif 'Stage' in data or 'STAGE' in data or 'Iteration' in data:
+                    elif any(kw in data_lower for kw in ['stage', 'iteration', 'performing', 'compressed', 'handoff', 'macro', 'micro', 'collapse']):
                         self.log_output(data, 'info')
                     elif '=' in data and len(data.strip()) > 10:
-                        # Section headers
+                        self.log_output(data, 'accent')
+                    elif any(kw in data_lower for kw in ['modular', 'remainder', 'gcd', 'search', 'resonance', 'offset', 'precision', 'encoding', 'lattice', 'zoom', 'refinement']):
+                        self.log_output(data, 'info')
+                    elif any(kw in data_lower for kw in ['config', 'using', 'window', 'coordinate', 'shadow', 'carry']):
                         self.log_output(data, 'info')
                     else:
                         self.log_output(data)
                 elif msg_type == 'status':
-                    self.status_label.config(text=data, foreground='#00ff88')
+                    self.status_label.config(text=data, fg=self.colors['accent'])
                     self.log_output(f"[STATUS] {data}\n", 'info')
                 elif msg_type == 'result':
                     self.display_results(data)
@@ -413,15 +530,17 @@ class FactorizationGUI:
                     
         except queue.Empty:
             pass
+        except Exception:
+            pass
         
-        # Schedule next check (more frequent for real-time feel)
-        self.root.after(50, self.monitor_output)
+        # Schedule next check (10ms for real-time feel)
+        self.root.after(10, self.monitor_output)
     
     def display_results(self, result):
-        """Display factorization results with verbose details."""
-        self.log_output("\n" + "="*80 + "\n", 'success')
-        self.log_output("📈 FACTORIZATION RESULTS\n", 'success')
-        self.log_output("="*80 + "\n\n", 'success')
+        """Display factorization results."""
+        self.log_output("\n" + "="*80 + "\n", 'accent')
+        self.log_output("📈 FACTORIZATION RESULTS\n", 'accent')
+        self.log_output("="*80 + "\n\n", 'accent')
         
         if result and 'factors' in result:
             factors = result['factors']
@@ -436,43 +555,21 @@ class FactorizationGUI:
                     self.log_output(f"    p × q = {p * q}\n", 'factor')
                     self.log_output(f"    Verification: {'✓ CORRECT' if verified else '✗ INCORRECT'}\n\n", 
                                   'success' if verified else 'error')
-                
-                # Display compression metrics if available
-                if 'compression_metrics' in result:
-                    metrics = result['compression_metrics']
-                    self.log_output("\n" + "="*80 + "\n", 'info')
-                    self.log_output("📊 COMPRESSION METRICS\n", 'info')
-                    self.log_output("="*80 + "\n", 'info')
-                    if 'volume_reduction' in metrics:
-                        self.log_output(f"   Volume reduction: {metrics.get('volume_reduction', 0):.2f}%\n", 'info')
-                    if 'surface_reduction' in metrics:
-                        self.log_output(f"   Surface area reduction: {metrics.get('surface_reduction', 0):.2f}%\n", 'info')
-                    if 'span_reduction' in metrics:
-                        self.log_output(f"   Span reduction: {metrics.get('span_reduction', 0):.2f}%\n", 'info')
-                    if 'unique_points' in metrics and 'total_points' in metrics:
-                        self.log_output(f"   Points collapsed: {metrics['unique_points']} / {metrics['total_points']}\n", 'info')
             else:
-                self.log_output("⚠️  No factors found.\n", 'warning')
-                self.log_output("   This may indicate N is prime, or factors require different encoding.\n", 'warning')
-        
-        self.log_output("\n" + "="*80 + "\n", 'info')
+                self.log_output("❌ No factors found.\n", 'error')
+        else:
+            self.log_output("❌ Factorization failed.\n", 'error')
     
     def factorization_done(self):
-        """Called when factorization completes."""
+        """Handle factorization completion."""
         self.is_running = False
         self.start_btn.config(state=tk.NORMAL)
         self.stop_btn.config(state=tk.DISABLED)
-        self.status_label.config(text="✓ Complete", foreground='#00ff88')
         self.progress.stop()
-        self.log_output("\n✅ Factorization process completed!\n", 'success')
-
-
-def main():
-    root = tk.Tk()
-    app = FactorizationGUI(root)
-    root.mainloop()
+        self.status_label.config(text="Ready", fg=self.colors['accent'])
 
 
 if __name__ == "__main__":
-    main()
-
+    root = tk.Tk()
+    app = SquarerGUI(root)
+    root.mainloop()
