@@ -4,9 +4,13 @@ Itrations are set to 100, for large N you need many iterations to compress and f
 Luckily it only takes 3 seconds to run a iteration...
 
 For RSA-2048 (sqrt(N) ≈ 10³⁰⁸):
+
 Original search space: ~10³⁰⁸ candidates
+
 After 3 iterations: ~10²⁹⁰ (reduced by 10¹⁸)
+
 After 10 iterations: ~10²⁴⁸ (reduced by 10⁶⁰)
+
 After 50 iterations: ~10⁸ (reduced by 10³⁰⁰)
 
 And so on.....
