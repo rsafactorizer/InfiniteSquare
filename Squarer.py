@@ -544,8 +544,8 @@ class GeometricLattice:
             N_prime = (B_transform[0] % self.size, B_transform[1] % self.size)  # Modular vertex N
 
             print(f"  Corners: A={A}, B={B}, C={C}, D={D}")
-            print(f"  MODULAR HANDOFF: A→(A⋅{handoff_x})mod{N:,} = {A_transform}")
-            print(f"  MODULAR HANDOFF: B→(B⋅{handoff_y})mod{N:,} = {B_transform}")
+            print(f"  MODULAR HANDOFF: A→(A⋅{handoff_x})mod{self.N:,} = {A_transform}")
+            print(f"  MODULAR HANDOFF: B→(B⋅{handoff_y})mod{self.N:,} = {B_transform}")
             print(f"  Resonance vertices: M={M}, N={N_prime}")
             print(f"  Modular triangle: M={M}, C={C}, D={D}")
         else:
@@ -953,10 +953,11 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
     lattice.initial_P = b  # Make P available for symmetry calculations
     
     # Store original encoding for factor extraction (PRESERVE FULL PRECISION)
+    sqrt_n = isqrt(N)  # Integer square root for large number handling
     original_encoding = {
-        'a': a, 
-        'b': b, 
-        'remainder': remainder, 
+        'a': a,
+        'b': b,
+        'remainder': remainder,
         'remainder_3d': remainder_3d,  # 3D remainder mapping
         'remainder_lattice_size': remainder_lattice_size,
         'scale': scale_factor,
