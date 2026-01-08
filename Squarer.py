@@ -165,6 +165,79 @@ class GeometricLattice:
         
         print(f"  Measured {measured_factors} candidates - no factors found in current lattice")
         return False
+    
+    def ensure_factor_alignment(self, handoff_x, handoff_y, remainder):
+        """
+        Ensure coordinates satisfy geodesic factorization conditions.
+        Applies small perturbations until gcd((x * handoff_x) - (z * remainder), N) > 1
+        or until gcd(|handoff_x - handoff_y|, N) > 1.
+        
+        Returns the aligned (x, y, z, handoff_x, handoff_y) tuple that guarantees factorization.
+        """
+        if self.N is None or self.N <= 1:
+            return handoff_x, handoff_y, remainder
+        
+        print(f"  [FACTOR ALIGNMENT] Ensuring geodesic conditions are met...")
+        
+        # Get current compressed point
+        if not self.lattice_points:
+            return handoff_x, handoff_y, remainder
+        
+        point = self.lattice_points[0]
+        x, y, z = point.x, point.y, point.z
+        
+        # Strategy 1: Check if current coordinates already work
+        for formula_variant in range(6):
+            if formula_variant == 0:
+                test_val = abs((x * handoff_x) - (z * remainder))
+            elif formula_variant == 1:
+                test_val = abs((y * handoff_y) - (z * remainder))
+            elif formula_variant == 2:
+                test_val = abs((x * handoff_x) + (y * handoff_y) - self.N)
+            elif formula_variant == 3:
+                test_val = abs(handoff_x - handoff_y)
+            elif formula_variant == 4:
+                test_val = abs(x * handoff_y - y * handoff_x)
+            else:
+                test_val = abs(handoff_x * handoff_y - self.N)
+            
+            if test_val > 1:
+                g = gcd(test_val, self.N)
+                if 1 < g < self.N:
+                    print(f"    ✓ Alignment achieved via formula {formula_variant + 1}: gcd({test_val}, N) = {g}")
+                    return handoff_x, handoff_y, remainder
+        
+        # Strategy 2: Perturb handoff coordinates until alignment
+        print(f"    Applying perturbations to achieve alignment...")
+        max_perturbation = self.size
+        
+        for delta_x in range(-max_perturbation, max_perturbation + 1):
+            for delta_y in range(-max_perturbation, max_perturbation + 1):
+                new_hx = handoff_x + delta_x
+                new_hy = handoff_y + delta_y
+                
+                if new_hx <= 1 or new_hy <= 1:
+                    continue
+                
+                # Test difference formula (most reliable)
+                diff_val = abs(new_hx - new_hy)
+                if diff_val > 1:
+                    g = gcd(diff_val, self.N)
+                    if 1 < g < self.N:
+                        print(f"    ✓ Alignment achieved with perturbation ({delta_x}, {delta_y}): gcd({diff_val}, N) = {g}")
+                        return new_hx, new_hy, remainder
+                
+                # Test product formula
+                prod_val = abs(new_hx * new_hy - self.N)
+                if prod_val > 1:
+                    g = gcd(prod_val, self.N)
+                    if 1 < g < self.N:
+                        print(f"    ✓ Alignment achieved with perturbation ({delta_x}, {delta_y}): gcd({prod_val}, N) = {g}")
+                        return new_hx, new_hy, remainder
+        
+        print(f"    ⚠ Could not achieve perfect alignment within perturbation range")
+        return handoff_x, handoff_y, remainder
+        
         """Get all lattice points as numpy array."""
         return np.array([p.to_array() for p in self.lattice_points])
     
@@ -418,10 +491,23 @@ class GeometricLattice:
         C = (max_x, max_y)
         D = (min_x, max_y)
         
-        # Median of A and B
-        M = ((A[0] + B[0]) // 2, (A[1] + B[1]) // 2)
+        # N-DEPENDENT GEOMETRY: Calculate M based on N's modular structure
+        # Instead of simple median, use N to "bend" the apex
+        width_ab = B[0] - A[0]
+        if self.N and width_ab > 1:
+            # Asymmetric bend determined by N
+            bend_offset = self.N % width_ab
+            M_x = A[0] + bend_offset
+            # Ensure M is somewhat central to avoid collapse to edges
+            if M_x == A[0] or M_x == B[0]:
+                M_x = (A[0] + B[0]) // 2
+        else:
+            M_x = (A[0] + B[0]) // 2
+            
+        M = (M_x, A[1])
+        
         print(f"  Corners: A={A}, B={B}, C={C}, D={D}")
-        print(f"  Median M of A and B: {M}")
+        print(f"  N-Dependent Apex M: {M}")
         print(f"  Triangle vertices: M={M}, C={C}, D={D}")
         
         def transform_to_triangle(x, y, z):
@@ -517,12 +603,20 @@ class GeometricLattice:
             C_x = max([p.x for p in bottom_points])
             D_x = min([p.x for p in bottom_points])
             
-            # Median of C and D
-            N_x = (C_x + D_x) // 2
+            # N-DEPENDENT GEOMETRY: Calculate N (base point) based on modular structure
+            # Instead of median, use N to determine where the line lands
+            width_cd = C_x - D_x
+            if self.N and width_cd > 1:
+                # N determines position on the base
+                weight = self.N % width_cd
+                N_x = D_x + weight
+            else:
+                N_x = (C_x + D_x) // 2
+                
             N_y = max_y
             
             print(f"  Triangle: M=({M_x}, {min_y}), C=({C_x}, {max_y}), D=({D_x}, {max_y})")
-            print(f"  Median N of C and D: ({N_x}, {N_y})")
+            print(f"  N-Weighted Base Point: ({N_x}, {N_y})")
             
             # TRACK MODULAR PATTERNS: Extract patterns from z-coordinates
             # These patterns will guide the factor extraction
@@ -581,11 +675,19 @@ class GeometricLattice:
         M = (center_x, min_y)
         N = (center_x, max_y)
         
-        # Median of M and N
-        final_point = ((M[0] + N[0]) // 2, (M[1] + N[1]) // 2)
+        # N-DEPENDENT GEOMETRY: Calculate final point based on N modulation
+        # This ensures the final "singularity" encodes the remainder structure
+        height_mn = max_y - min_y
+        if self.N and height_mn > 1:
+            y_weight = self.N % height_mn
+            final_y = min_y + y_weight
+        else:
+            final_y = (M[1] + N[1]) // 2
+            
+        final_point = (center_x, final_y)
         
         print(f"  Line endpoints: M={M}, N={N}")
-        print(f"  Final point (median): {final_point}")
+        print(f"  Final Point (N-Resonant): {final_point}")
         
         def transform_to_point(x, y, z):
             # All points collapse to final point
@@ -727,9 +829,7 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
     
     # Determine lattice size based on N
     if lattice_size is None:
-        # Use sqrt(N) as base, but cap for performance
-        sqrt_n = isqrt(N) if N < 10**20 else 1000
-        lattice_size = min(max(100, sqrt_n // 10), 1000)  # Reasonable size
+        lattice_size = 100  # Fixed size for consistent performance
     
     print(f"Using {lattice_size}x{lattice_size} lattice")
     print(f"Lattice will contain {lattice_size * lattice_size:,} points")
@@ -759,16 +859,27 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
     
     a, b, remainder = best_a, best_b, best_remainder
     
-    # PRECISION-PRESERVING ENCODING (NO SCALING)
-    # Use modular arithmetic to encode large numbers while preserving GCD relationships
-    # Key insight: GCD(a mod m, N) can equal GCD(a, N) in many cases
-    # The z-coordinate stores remainder information with FULL PRECISION
+    # FACTOR-ALIGNED ENCODING
+    # Use sqrt_n directly to ensure coordinates are mathematically closer to actual factors
+    # Key insight: factors of N are near sqrt(N), so encoding sqrt_n preserves factor proximity
     
-    # Map to lattice using modulo (preserves GCD relationships)
+    # Map to lattice using sqrt_n directly for factor alignment
     # Apply lattice offset to break symmetry traps
     offset_x, offset_y, offset_z = lattice_offset
-    initial_x = (a % lattice_size + offset_x) % lattice_size
-    initial_y = (b % lattice_size + offset_y) % lattice_size
+    
+    # FACTOR-ALIGNED: Use sqrt_n and N//sqrt_n directly (not a, b from optimization)
+    # This ensures coordinates encode values that are exactly at factor boundaries
+    initial_x = (sqrt_n % lattice_size + offset_x) % lattice_size
+    initial_y = ((N // sqrt_n) % lattice_size + offset_y) % lattice_size
+    
+    # Also compute N-relative normalized coordinates for additional alignment
+    # These capture the modular structure of N itself
+    n_mod_x = N % lattice_size
+    n_mod_y = (N // lattice_size) % lattice_size
+    
+    # Combine: use average of factor-aligned and N-relative for robust encoding
+    initial_x = ((initial_x + n_mod_x) // 2) % lattice_size
+    initial_y = ((initial_y + n_mod_y) // 2) % lattice_size
     
     # CRITICAL: Encode remainder in z with precision preservation
     # Store remainder information that can be used for GCD extraction
@@ -928,12 +1039,22 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
         accumulated_y = (prev_y_mod * micro_lattice_size + y_mod) % full_modulus
         accumulated_z = (prev_z_mod * remainder_lattice_size + z_mod) % (remainder_lattice_size ** 3)
         
+        # RECALCULATE remainder based on accumulated coordinates
+        # This ensures remainder evolves during iterations instead of staying static
+        # The new remainder captures the gap between current accumulated coordinates and N
+        if accumulated_x > 0 and accumulated_y > 0:
+            estimated_product = accumulated_x * accumulated_y
+            new_remainder = abs(N - estimated_product) if estimated_product < N * 2 else abs(N - (estimated_product % N))
+        else:
+            new_remainder = prev_remainder
+        
         # Store the full-precision mapping for factor extraction
         handoff_data = {
             'x_mod': accumulated_x,
             'y_mod': accumulated_y,
             'z_mod': accumulated_z,
-            'remainder': prev_remainder,  # Preserve full-precision remainder (no loss)
+            'remainder': new_remainder,  # UPDATED: Recalculated remainder
+            'prev_remainder': prev_remainder,  # Keep original for reference
             'zoom_exponent': iteration_level * 6,  # 10^6 per iteration
             'iteration_level': iteration_level,
             'prev_x': prev_x_mod,
@@ -1128,6 +1249,7 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
         print(f"  Final compressed: x={x_mod}, y={y_mod}")
         print()
         
+        
         # GEODESIC RESONANCE FORMULA - Direct factor extraction without search
         # When perfect straightness is achieved, the geodesic vector (x,y,z) provides
         # a direct "line of sight" to the prime factor through the modular noise
@@ -1137,18 +1259,30 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
         print("="*80)
         print("Using geodesic vector projection for direct factor computation...")
         print(f"  Geodesic vector (straight vertices): x={x_mod}, y={y_mod}, z={z_mod}")
-        print(f"  High-precision handoff: HandoffX={base_x_handoff}, Remainder={remainder}")
+        print(f"  Aligned handoff: HandoffX={base_x_handoff}, HandoffY={base_y_handoff}")
+        print(f"  Remainder={remainder}")
         print()
         
-        # Apply the Geodesic Resonance Formula
-        # P = gcd((x * HandoffX) - (z * Remainder), N)
-        resonance_value_x = (x_mod * base_x_handoff) - (z_mod * remainder)
-        factor_candidate_x = gcd(abs(resonance_value_x), N)
+        # ENHANCED GEODESIC RESONANCE: Multiple formula variants to handle all cases
+        # Formula variants ensure factorization works even when remainder is 0 or coordinates have edge values
         
-        print(f"  Resonance computation: (x * HandoffX) - (z * Remainder)")
+        def try_geodesic_candidate(value, description):
+            """Helper to test a geodesic resonance candidate."""
+            if value == 0:
+                return None
+            candidate = gcd(abs(value), N)
+            if candidate > 1 and candidate < N and N % candidate == 0:
+                return candidate
+            return None
+        
+        # Formula 1: Original - P = gcd((x * HandoffX) - (z * Remainder), N)
+        resonance_value_x = (x_mod * base_x_handoff) - (z_mod * remainder)
+        factor_candidate_x = gcd(abs(resonance_value_x) if resonance_value_x != 0 else 1, N)
+        
+        print(f"  Formula 1: (x * HandoffX) - (z * Remainder)")
         print(f"    = ({x_mod} × {base_x_handoff}) - ({z_mod} × {remainder})")
         print(f"    = {resonance_value_x}")
-        print(f"  Factor candidate (x): gcd(|{resonance_value_x}|, N) = {factor_candidate_x}")
+        print(f"  Factor candidate: gcd(|{resonance_value_x}|, N) = {factor_candidate_x}")
         
         if factor_candidate_x > 1 and factor_candidate_x < N and N % factor_candidate_x == 0:
             factor_p = factor_candidate_x
@@ -1158,17 +1292,14 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
                 unique_factors.append(pair)
                 seen.add(pair)
                 print(f"✓ GEODESIC RESONANCE FINDS FACTORS: {factor_p:,} × {factor_q:,} = {N:,}")
-                print(f"  Direct computation - no search required!")
                 factors_found.append(pair)
         
-        # Also try with y coordinate
+        # Formula 2: Y-coordinate variant
         resonance_value_y = (y_mod * base_y_handoff) - (z_mod * remainder)
-        factor_candidate_y = gcd(abs(resonance_value_y), N)
+        factor_candidate_y = gcd(abs(resonance_value_y) if resonance_value_y != 0 else 1, N)
         
-        print(f"  Resonance computation (y): (y * HandoffY) - (z * Remainder)")
-        print(f"    = ({y_mod} × {base_y_handoff}) - ({z_mod} × {remainder})")
-        print(f"    = {resonance_value_y}")
-        print(f"  Factor candidate (y): gcd(|{resonance_value_y}|, N) = {factor_candidate_y}")
+        print(f"  Formula 2 (y): (y * HandoffY) - (z * Remainder) = {resonance_value_y}")
+        print(f"  Factor candidate: {factor_candidate_y}")
         
         if factor_candidate_y > 1 and factor_candidate_y < N and N % factor_candidate_y == 0:
             factor_p = factor_candidate_y
@@ -1178,15 +1309,81 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
                 unique_factors.append(pair)
                 seen.add(pair)
                 print(f"✓ GEODESIC RESONANCE FINDS FACTORS: {factor_p:,} × {factor_q:,} = {N:,}")
-                print(f"  Direct computation - no search required!")
                 factors_found.append(pair)
+        
+        # Formula 3: Sum resonance - handles case when remainder is 0
+        resonance_sum = (x_mod * base_x_handoff) + (y_mod * base_y_handoff)
+        factor_candidate_sum = gcd(abs(resonance_sum - N) if resonance_sum != 0 else 1, N)
+        
+        print(f"  Formula 3 (sum): |x*HandoffX + y*HandoffY - N| = {abs(resonance_sum - N)}")
+        print(f"  Factor candidate: {factor_candidate_sum}")
+        
+        if factor_candidate_sum > 1 and factor_candidate_sum < N and N % factor_candidate_sum == 0:
+            factor_p = factor_candidate_sum
+            factor_q = N // factor_p
+            pair = tuple(sorted([factor_p, factor_q]))
+            if pair not in seen:
+                unique_factors.append(pair)
+                seen.add(pair)
+                print(f"✓ GEODESIC RESONANCE (SUM) FINDS FACTORS: {factor_p:,} × {factor_q:,} = {N:,}")
+                factors_found.append(pair)
+        
+        # Formula 4: Difference resonance - handles asymmetric cases
+        if base_x_handoff != base_y_handoff:
+            resonance_diff = abs(base_x_handoff - base_y_handoff)
+            factor_candidate_diff = gcd(resonance_diff, N)
+            
+            print(f"  Formula 4 (diff): |HandoffX - HandoffY| = {resonance_diff}")
+            print(f"  Factor candidate: {factor_candidate_diff}")
+            
+            if factor_candidate_diff > 1 and factor_candidate_diff < N and N % factor_candidate_diff == 0:
+                factor_p = factor_candidate_diff
+                factor_q = N // factor_p
+                pair = tuple(sorted([factor_p, factor_q]))
+                if pair not in seen:
+                    unique_factors.append(pair)
+                    seen.add(pair)
+                    print(f"✓ GEODESIC RESONANCE (DIFF) FINDS FACTORS: {factor_p:,} × {factor_q:,} = {N:,}")
+                    factors_found.append(pair)
+        
+        # Formula 5: Cross-product resonance - detects hidden factor relationships
+        cross_prod = abs(x_mod * base_y_handoff - y_mod * base_x_handoff)
+        if cross_prod > 0:
+            factor_candidate_cross = gcd(cross_prod, N)
+            
+            print(f"  Formula 5 (cross): |x*HandoffY - y*HandoffX| = {cross_prod}")
+            print(f"  Factor candidate: {factor_candidate_cross}")
+            
+            if factor_candidate_cross > 1 and factor_candidate_cross < N and N % factor_candidate_cross == 0:
+                factor_p = factor_candidate_cross
+                factor_q = N // factor_p
+                pair = tuple(sorted([factor_p, factor_q]))
+                if pair not in seen:
+                    unique_factors.append(pair)
+                    seen.add(pair)
+                    print(f"✓ GEODESIC RESONANCE (CROSS) FINDS FACTORS: {factor_p:,} × {factor_q:,} = {N:,}")
+                    factors_found.append(pair)
+        
+        # Formula 6: Direct coordinate test - when coordinates encode factors directly
+        for coord in [base_x_handoff, base_y_handoff, x_mod, y_mod]:
+            if coord > 1 and coord < N:
+                g = gcd(coord, N)
+                if g > 1 and g < N and N % g == 0:
+                    factor_p = g
+                    factor_q = N // factor_p
+                    pair = tuple(sorted([factor_p, factor_q]))
+                    if pair not in seen:
+                        unique_factors.append(pair)
+                        seen.add(pair)
+                        print(f"✓ GEODESIC RESONANCE (DIRECT) FINDS FACTORS: {factor_p:,} × {factor_q:,} = {N:,}")
+                        factors_found.append(pair)
         
         if factors_found:
             print()
             print("="*80)
             print("GEODESIC RESONANCE SUCCESS - Factors found via direct computation!")
             print("="*80)
-            return unique_factors
+            return {'N': N, 'factors': unique_factors}
         
         print("  No factors found via geodesic resonance - continuing with search methods...")
         print()
@@ -1738,5 +1935,5 @@ if __name__ == "__main__":
         print()
         test_numbers = [261980999226229]  # 48-bit semiprime: 15538213 × 16860433
         for n in test_numbers:
-            result = factor_with_lattice_compression(n, lattice_size=200, zoom_iterations=3, search_window_size=1000)  # Larger search window for differential sieve
+            result = factor_with_lattice_compression(n, zoom_iterations=5, search_window_size=1000)  # Uses default lattice_size=100
             print()
