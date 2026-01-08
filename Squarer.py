@@ -36,6 +36,7 @@ class LatticePoint:
         self.x = x
         self.y = y  
         self.z = z
+        self.score = 0.0 # Score for beam search selection
     
     def __repr__(self):
         if self.z == 0:
@@ -85,7 +86,7 @@ class GeometricLattice:
     All points in the lattice are transformed together at each step.
     """
     
-    def __init__(self, size: int, initial_point: Optional[LatticePoint] = None, remainder_lattice_size: int = 100, N: int = None):
+    def __init__(self, size: int, initial_point: Optional[LatticePoint] = None, remainder_lattice_size: int = 100, N: int = None, factor_base: int = None, factor_step: int = 1):
         """
         Initialize 3D lattice (cube) where each point represents a candidate factor.
         
@@ -94,6 +95,8 @@ class GeometricLattice:
             initial_point: Optional starting point to insert
             remainder_lattice_size: Size of 3D remainder lattice (for z-coordinate mapping)
             N: The number we're factoring (needed for candidate factor encoding)
+            factor_base: Base value for candidate factor encoding
+            factor_step: Step size between candidate factors
         """
         self.size = size
         self.remainder_lattice_size = remainder_lattice_size
@@ -101,21 +104,20 @@ class GeometricLattice:
         self.lattice_points = []
         
         # Create full 3D lattice cube where EACH POINT REPRESENTS A CANDIDATE FACTOR
-        # Instead of abstract coordinates, each (x,y,z) encodes a potential factor of N
         print(f"  Creating 3D lattice cube: {size}×{size}×{size} = {size**3:,} points")
-        print(f"  Each point encodes a candidate factor for measurement during compression")
         
-        # Strategy: Encode candidate factors in lattice coordinates
-        # For large N, test factors around sqrt(N) with fine granularity
-        sqrt_n = isqrt(N)
-        factor_base = max(sqrt_n - 10000000, 2)  # Start from 10M below sqrt(N) to cover wide range
-        factor_step = 1  # Fine-grained steps
+        if factor_base is None:
+            sqrt_n = isqrt(N)
+            factor_base = max(sqrt_n - 10000000, 2)
+            
+        self.factor_base = factor_base
+        self.factor_step = factor_step
         
         for x in range(size):
             for y in range(size):
                 for z in range(size):
-                    # Encode candidate factor: factor_base + linear combination of coordinates
-                    candidate_factor = factor_base + x*size*size + y*size + z
+                    # Encode candidate factor
+                    candidate_factor = factor_base + (x*size*size + y*size + z) * factor_step
                     
                     # Ensure candidate is in valid range
                     if 1 < candidate_factor < N:
@@ -255,7 +257,17 @@ class GeometricLattice:
         new_points = []
         for point in self.lattice_points:
             new_coords = transformation_func(point.x, point.y, point.z)
-            new_points.append(LatticePoint(new_coords[0], new_coords[1], new_coords[2]))
+            new_p = LatticePoint(new_coords[0], new_coords[1], new_coords[2])
+            
+            # PRESERVE ATTRIBUTES: Copy candidate_factor and any other metadata
+            if hasattr(point, 'candidate_factor'):
+                new_p.candidate_factor = point.candidate_factor
+            if hasattr(point, 'shadow_x'):
+                new_p.shadow_x = point.shadow_x
+            if hasattr(point, 'shadow_y'):
+                new_p.shadow_y = point.shadow_y
+                
+            new_points.append(new_p)
         self.lattice_points = new_points
         self.transformation_history.append(self.current_stage)
     
@@ -696,6 +708,40 @@ class GeometricLattice:
         self.transform_all_points(transform_to_point)
         self.current_stage = "compressed_point"
         print(f"  Lattice transformed: {len(self.lattice_points)} points compressed to single point")
+
+    def score_straightness(self, handoff_x, handoff_y, remainder):
+        """
+        Calculate 'Straightness' score for all points in the lattice based on geodesic alignment.
+        Lower score is better (higher resonance).
+        """
+        if not self.lattice_points or self.N is None:
+            return
+            
+        print(f"  [BEAM] Scoring {len(self.lattice_points)} points for geodesic straightness...")
+        
+        for p in self.lattice_points:
+            # Resonance Factor 1: Geodesic Alignment
+            # The straight line condition: (x*hx - z*rem) should be a multiple of a factor of N
+            # Since we don't know the factor, we check gcd with N
+            val1 = abs((p.x * handoff_x) - (p.z * remainder))
+            g1 = gcd(val1, self.N)
+            
+            # Resonance Factor 2: Product Proximity
+            # For points encoding factors directly, candidate_factor * partner should be near N
+            # For geometric points, x*y should be near N
+            # (Note: In this version, candidate_factor is attached to points in __init__)
+            if hasattr(p, 'candidate_factor'):
+                val2 = abs(self.N % p.candidate_factor)
+            else:
+                val2 = abs(self.N - (p.x * p.y)) # Fallback for geometric points
+                
+            # Scoring: combination of GCD resonance and bit-length remainder
+            # High GCD = Low score. Smaller remainder bit-length = Low score.
+            # We avoid float(self.N) to prevent OverflowError for 2048-bit numbers.
+            gcd_score = 1000.0 / (g1.bit_length() + 1)
+            rem_score = val2.bit_length()
+            
+            p.score = gcd_score + rem_score
     
     def get_bounds(self):
         """Get bounding box of current lattice points (3D)."""
@@ -808,7 +854,7 @@ class GeometricLattice:
         print()
 
 
-def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_iterations: int = 100, search_window_size: int = None, lattice_offset: tuple = (0, 0, 0), beam_width: int = 50):
+def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_iterations: int = 100, search_window_size: int = None, lattice_offset: tuple = (0, 0, 0)):
     """
     Factor N using geometric lattice compression.
     
@@ -1102,186 +1148,64 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
             current_handoff
         )
         
+        # Update handoff data with accumulated information
+        current_handoff.update(handoff_data)
+        current_handoff['iteration'] = iteration
         
-    
-    # BEAM SEARCH INITIALIZATION
-    # Track multiple "parallel universes" to correct for quantization drift
-    BEAM_WIDTH = beam_width
-    
-    # Each candidate is a dict containing the full state needed for the next iteration
-    initial_candidate = {
-        'x_mod': initial_x,
-        'y_mod': initial_y,
-        'z_mod': initial_z,
-        'remainder': remainder,
-        'a': a,
-        'b': b,
-        'history': [],
-        'score': 0
-    }
-    
-    active_candidates = [initial_candidate]
-    
-    print(f"Starting BEAM SEARCH with K={BEAM_WIDTH} candidates...")
-    print(f"Initial state: x={initial_x}, y={initial_y}, z={initial_z}")
-    
-    # Zoom Loop
-    for iteration in range(zoom_iterations):
-        print(f"\n[ITERATION {iteration + 1}/{zoom_iterations}] Active candidates: {len(active_candidates)}")
+        iteration_coords.append((current_handoff['x_mod'], current_handoff['y_mod']))
         
-        next_generation = []
+        if iteration % 10 == 0 or iteration <= 5:
+            print(f"  Handoff: {current_center} → {new_center}")
+            print(f"  Preserving {current_handoff['remainder'].bit_length()}-bit remainder precision")
+            print(f"  Accumulated coordinates: x_mod={current_handoff['x_mod']}, y_mod={current_handoff['y_mod']}")
         
-        # Process each candidate in the beam
-        for i, parent_cand in enumerate(active_candidates):
-            # Create lattice centered on this candidate's focus point
-            # Use the "singularity" logic to compress
-            
-            # Setup lattice for this candidate
-            center_point = LatticePoint(parent_cand['x_mod'], parent_cand['y_mod'], parent_cand['z_mod'])
-            
-            # For iteration 0, we use the global N/lattice setup
-            # For subsequent, we use the parent's handoff
-            
-            # Re-create lattice context (simplified for performance)
-            lattice = GeometricLattice(lattice_size, center_point, remainder_lattice_size=remainder_lattice_size, N=N)
-            
-            # Compress (Geometry Step)
-            lattice.compress_volume_to_plane()
-            lattice.create_bounded_square()
-            lattice.add_vertex_lines()
-            lattice.compress_square_to_triangle()
-            lattice.compress_triangle_to_line()
-            lattice.compress_line_to_point()
-            
-            # The singularity point
-            if not lattice.lattice_points:
-                continue
-            singularity = lattice.lattice_points[0]
-            
-            # EXPANSION STEP: Generate children from this singularity
-            # Instead of just taking the singularity, we take it AND its neighbors
-            # This creates the "diversity" needed to catch the true path if it drifted 1px
-            
-            expansion_radius = 1 # 3x3 grid around singularity
-            for dx in range(-expansion_radius, expansion_radius + 1):
-                for dy in range(-expansion_radius, expansion_radius + 1):
-                    # Child coordinates (relative to current lattice)
-                    child_x_rel = singularity.x + dx
-                    child_y_rel = singularity.y + dy
-                    child_z_rel = singularity.z # Z usually doesn't need spatial jitter in 2D projection
-                    
-                    # Map back to global/accumulated space
-                    # Calculate new remainder and score
-                    # Note: We need to propagate the "recursive handoff" logic here
-                    
-                    # Calculate new full-precision coordinates (simulated handoff)
-                    # For score calculation only - the next iteration will re-center
-                    
-                    # Accumulate: This is tricky. We need to follow perform_recursive_handoff logic
-                    # But adaptation for beam search:
-                    # The 'child' becomes the seed for the next iteration.
-                    
-                    # Modulo Carry Update
-                    # new_remainder = abs(N - (acc_x * acc_y)) logic
-                    # BUT calculating full acc_x is huge. 
-                    # We only need the *local* remainder update for the next step?
-                    # Squarer.py's perform_recursive_handoff updates 'remainder' based on new chunks.
-                    
-                    # Simplified Handoff for Beam:
-                    # Just pass the new local coordinates. The 'remainder' serves as the Z-depth.
-                    # We need to refine 'remainder' for the next step.
-                    
-                    # Calculate child's new remainder contribution
-                    # In the original code, remainder was recalculated.
-                    # Here, we'll keep it simple: Pass the parent's remainder, 
-                    # but maybe score based on "how close to factor-like" it is?
-                    
-                    # Scoring heuristic:
-                    # Ideally, we want the path that minimizes "drift" from the factor line.
-                    # Proxy: Minimize (x*y - N) modulo local window?
-                    
-                    # Let's create the child candidate
-                    child_cand = {
-                        'x_mod': child_x_rel % lattice_size, # Re-wrap for next lattice
-                        'y_mod': child_y_rel % lattice_size,
-                        'z_mod': child_z_rel % remainder_lattice_size,
-                        'remainder': parent_cand['remainder'], # Propagate remainder
-                        'a': parent_cand['a'],
-                        'b': parent_cand['b'],
-                        'history': parent_cand['history'] + [(child_x_rel, child_y_rel)],
-                        'score': 0
-                    }
-                    
-                    # Score the candidate
-                    # 1. Coordinate Resonance: |x_rel - y_rel| should be minimal (straight line)
-                    # 2. Geometric Resonance: gcd((x*X - z*R) ... ) check
-                    
-                    # Heuristic score: Inverse of difference
-                    diff = abs(child_x_rel - child_y_rel)
-                    child_cand['score'] = -diff # maximize negative difference (minimize difference)
-                    
-                    next_generation.append(child_cand)
+        # Create new micro-lattice centered on handoff point
+        current_lattice = GeometricLattice(
+            micro_lattice_size,
+            new_center,
+            remainder_lattice_size=remainder_lattice_size,
+            N=N
+        )
         
-        # SELECT TOP K
-        # Sort by score (descending)
-        next_generation.sort(key=lambda x: x['score'], reverse=True)
-        active_candidates = next_generation[:BEAM_WIDTH]
+        # Stage C: Collapse the micro-lattice
+        current_lattice.compress_volume_to_plane()
+        current_lattice.expand_point_to_line()
+        current_lattice.create_square_from_line()
+        current_lattice.create_bounded_square()
+        current_lattice.add_vertex_lines()
+        current_lattice.compress_square_to_triangle()
+        current_lattice.compress_triangle_to_line()
+        current_lattice.compress_line_to_point()
         
-        # Print best score
-        if active_candidates:
-            print(f"  Best candidate score: {active_candidates[0]['score']}")
-            print(f"  Best path: {active_candidates[0]['history'][-1]}")
-    
-    # FINAL FACTOR EXTRACTION FROM BEAM
-    print("\n[BEAM SEARCH COMPLETE] checking top candidates for factors...")
-    unique_factors = []
-    seen = set()
-    
-    for cand in active_candidates:
-        # Check each candidate for factors using the geometric resonance formulas
-        # Reconstruct context
-        x_mod = cand['x_mod']
-        y_mod = cand['y_mod']
-        z_mod = cand['z_mod']
-        remainder = cand['remainder']
+        # MEASURE FACTORS: Check each lattice point during compression
+        # This is the "measurement" - each point gets evaluated for being a factor
+        if current_lattice.measure_factors(N, unique_factors, seen):
+            print(f"  ✓ Factor found during lattice measurement at iteration {iteration}")
         
-        # Handoff logic (simplified for beam result)
-        # We treat the final state as the "handoff"
-        base_x = x_mod
-        base_y = y_mod
+        # Get new compressed point
+        current_center = current_lattice.lattice_points[0] if current_lattice.lattice_points else None
+        if not current_center:
+            print(f"  Warning: No point found at iteration {iteration}")
+            break
         
-        # Formula 1: (x * base_x) - (z * remainder)
-        # Note: x_mod IS the base coordinate in this recursive view
-        # We need the *accumulated* values to really check resonance, 
-        # or we check local resonance.
-        # Let's try the local resonance check which worked for smaller numbers
+        if iteration % 10 == 0 or iteration <= 5:
+            print(f"  → Compressed to: {current_center}")
+            # Calculate zoom in scientific notation manually to avoid overflow
+            zoom_exponent = iteration * 6  # 10^6 per iteration = 6 digits per iteration
+            print(f"  → Cumulative zoom: 10^{zoom_exponent} ({iteration} iterations)")
+            print(f"  → Remainder precision maintained: {current_handoff['remainder'].bit_length()} bits")
+            print()
         
-        val = abs(x_mod * y_mod - remainder) # Very simple check
-        if val > 1:
-            g = gcd(val, N)
-            if 1 < g < N:
-                 pair = tuple(sorted([g, N//g]))
-                 if pair not in seen:
-                     unique_factors.append(pair)
-                     seen.add(pair)
-                     print(f"✓ FACTOR FOUND: {pair}")
+        # Calculate zoom exponent for this iteration
+        zoom_exponent = iteration * 6  # 10^6 per iteration
         
-        # Try original formulas with 'x_mod' as both 'x' and 'handoff' (self-resonance)
-        term = abs(x_mod * x_mod - z_mod * remainder)
-        if term > 1:
-            g = gcd(term, N)
-            if 1 < g < N:
-                 pair = tuple(sorted([g, N//g]))
-                 if pair not in seen:
-                     unique_factors.append(pair)
-                     seen.add(pair)
-                     print(f"✓ FACTOR FOUND: {pair}")
-
-    if unique_factors:
-        return {'N': N, 'factors': unique_factors}
-    
-    print("No factors found in beam.")
-    return {'N': N, 'factors': []}
+        zoom_history.append({
+            'iteration': iteration,
+            'point': current_center,
+            'zoom_exponent': zoom_exponent,
+            'handoff_data': current_handoff.copy(),
+            'remainder_bits': current_handoff['remainder'].bit_length()
+        })
     
     final_iterations = len(zoom_history) - 1
     final_zoom_exponent = final_iterations * 6  # 10^6 per iteration
@@ -1974,6 +1898,142 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
     }
 
 
+def collapse_lattice(lattice):
+    """Apply the full geometric compression sequence to a lattice."""
+    lattice.compress_volume_to_plane()
+    lattice.expand_point_to_line()
+    lattice.create_square_from_line()
+    lattice.create_bounded_square()
+    lattice.add_vertex_lines()
+    lattice.compress_square_to_triangle()
+    lattice.compress_triangle_to_line()
+    lattice.compress_line_to_point()
+
+def factor_with_beam_search(N: int, beam_width: int = 5, zoom_iterations: int = 50, lattice_size: int = 100):
+    """
+    Factor N using Beam Search Refinement.
+    Tracks 'beam_width' parallel singularities (paths) to overcome resolution limits.
+    """
+    import sys
+    sys.stdout.flush()
+    print("="*80)
+    print("BEAM SEARCH GEOMETRIC FACTORIZATION")
+    print("="*80)
+    print(f"Target N: {N}")
+    print(f"Beam Width: {beam_width} | Zoom Iterations: {zoom_iterations}")
+    sys.stdout.flush()
+
+    sqrt_n = isqrt(N)
+    
+    # 1. Macro-Collapse (Initial Beam Seeding)
+    # We start with one lattice, but extract 'beam_width' top resonant points
+    initial_point = LatticePoint(sqrt_n % lattice_size, (N // sqrt_n) % lattice_size, 0)
+    lattice = GeometricLattice(lattice_size, initial_point, N=N)
+    
+    collapse_lattice(lattice)
+    
+    # Check for success in initial lattice measurement
+    unique_factors = []
+    seen = set()
+    lattice.measure_factors(N, unique_factors, seen)
+    if unique_factors:
+        return {'factors': unique_factors, 'N': N}
+
+    # Extract initial beam
+    beam = []
+    if lattice.lattice_points:
+        p = lattice.lattice_points[0]
+        # Initial handoff data
+        handoff_base = {
+            'x_mod': initial_point.x,
+            'y_mod': initial_point.y,
+            'z_mod': initial_point.z,
+            'remainder': N - (sqrt_n * (N // sqrt_n)),
+            'iteration': 0
+        }
+        
+        # Branch the initially single path into W parallel realities
+        import random
+        for i in range(beam_width):
+            # Add small perturbations to the singularity for diverse paths
+            noise_x = random.randint(-2, 2) if i > 0 else 0
+            noise_y = random.randint(-2, 2) if i > 0 else 0
+            perturbed_p = LatticePoint(p.x + noise_x, p.y + noise_y, p.z)
+            beam.append((perturbed_p, handoff_base.copy()))
+
+    # 2. Iterative Zoom with Beam Search
+    for iteration in range(1, zoom_iterations + 1):
+        print(f"\n[ITERATION {iteration}/{zoom_iterations}] Evolving Beam of {len(beam)} paths...")
+        
+        next_candidates = []
+        
+        for idx, (singularity, handoff) in enumerate(beam):
+            # A. Handoff to Micro-Lattice
+            # Calculate new accumulated state (Modular Carry)
+            acc_x = (handoff['x_mod'] * lattice_size + singularity.x) % N
+            acc_y = (handoff['y_mod'] * lattice_size + singularity.y) % N
+            acc_z = (handoff['z_mod'] * lattice_size + singularity.z) % (100**3) # Using remainder_lattice_size=100
+            
+            # Recalculate remainder
+            new_rem = abs(N - (acc_x * acc_y)) if acc_x > 0 and acc_y > 0 else handoff['remainder']
+            
+            new_handoff = {
+                'x_mod': acc_x,
+                'y_mod': acc_y,
+                'z_mod': acc_z,
+                'remainder': new_rem,
+                'iteration': iteration
+            }
+            
+            # B. Branch: Create Micro-Lattice centered on this path's singularity
+            # FACTOR BASE REFINEMENT: Zoom the factor range based on the singularity
+            # We use the accumulated coordinate (True North) to predict the factor partner
+            if acc_x > 0:
+                predicted_factor = N // acc_x
+            else:
+                predicted_factor = sqrt_n
+                
+            # Range narrowing: the window size (lattice_size^3 * step) narrows
+            # We want the NEW lattice to cover the 'uncertainty' of the singularity
+            # If step was 1, we want to look at exactly the neighborhood of the singularity.
+            new_step = max(1, handoff['remainder'] // (lattice_size**3) if iteration < 5 else 1)
+            new_base = max(2, predicted_factor - (lattice_size**3 // 2) * new_step)
+            
+            # Add some path-specific dithering to the base for diversity
+            new_base += random.randint(-5, 5) * new_step
+            
+            if iteration <= 5 or iteration % 10 == 0:
+                print(f"  [ZOOM] Path {idx}: Predicted Factor ~ {predicted_factor}")
+                print(f"         New Base: {new_base}, Step: {new_step}")
+            
+            center = LatticePoint(singularity.x % lattice_size, singularity.y % lattice_size, singularity.z % 100)
+            micro_lattice = GeometricLattice(lattice_size, center, N=N, factor_base=new_base, factor_step=new_step)
+            
+            # C. Collapse to Point
+            collapse_lattice(micro_lattice)
+            
+            # D. Measure & Check for Factors
+            micro_lattice.measure_factors(N, unique_factors, seen)
+            if unique_factors:
+                print(f"✓ Factor found in beam path {idx} at iteration {iteration}!")
+                return {'factors': unique_factors, 'N': N}
+            
+            # E. Score resulting point for beam selection
+            if micro_lattice.lattice_points:
+                res_singularity = micro_lattice.lattice_points[0]
+                micro_lattice.score_straightness(new_handoff['x_mod'], new_handoff['y_mod'], new_handoff['remainder'])
+                next_candidates.append((res_singularity, new_handoff))
+
+        # F. Prune Beam: Keep top W candidates based on score
+        next_candidates.sort(key=lambda x: x[0].score)
+        beam = next_candidates[:beam_width]
+        
+        if beam:
+            print(f"  Beam pruned. Best score: {beam[0][0].score:.6f}")
+
+    print("\nNo factors found via Beam Search.")
+    return {'factors': [], 'N': N}
+
 def demo_lattice_transformations():
     """Demonstrate full lattice transformation sequence."""
     print("="*80)
@@ -2068,5 +2128,5 @@ if __name__ == "__main__":
         print()
         test_numbers = [261980999226229]  # 48-bit semiprime: 15538213 × 16860433
         for n in test_numbers:
-            result = factor_with_lattice_compression(n, zoom_iterations=5, search_window_size=1000)  # Uses default lattice_size=100
+            result = factor_with_beam_search(n, zoom_iterations=10, beam_width=5)
             print()
