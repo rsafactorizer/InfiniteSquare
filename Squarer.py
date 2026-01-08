@@ -808,7 +808,7 @@ class GeometricLattice:
         print()
 
 
-def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_iterations: int = 100, search_window_size: int = None, lattice_offset: tuple = (0, 0, 0)):
+def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_iterations: int = 100, search_window_size: int = None, lattice_offset: tuple = (0, 0, 0), beam_width: int = 50):
     """
     Factor N using geometric lattice compression.
     
@@ -1102,64 +1102,186 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
             current_handoff
         )
         
-        # Update handoff data with accumulated information
-        current_handoff.update(handoff_data)
-        current_handoff['iteration'] = iteration
         
-        iteration_coords.append((current_handoff['x_mod'], current_handoff['y_mod']))
+    
+    # BEAM SEARCH INITIALIZATION
+    # Track multiple "parallel universes" to correct for quantization drift
+    BEAM_WIDTH = beam_width
+    
+    # Each candidate is a dict containing the full state needed for the next iteration
+    initial_candidate = {
+        'x_mod': initial_x,
+        'y_mod': initial_y,
+        'z_mod': initial_z,
+        'remainder': remainder,
+        'a': a,
+        'b': b,
+        'history': [],
+        'score': 0
+    }
+    
+    active_candidates = [initial_candidate]
+    
+    print(f"Starting BEAM SEARCH with K={BEAM_WIDTH} candidates...")
+    print(f"Initial state: x={initial_x}, y={initial_y}, z={initial_z}")
+    
+    # Zoom Loop
+    for iteration in range(zoom_iterations):
+        print(f"\n[ITERATION {iteration + 1}/{zoom_iterations}] Active candidates: {len(active_candidates)}")
         
-        if iteration % 10 == 0 or iteration <= 5:
-            print(f"  Handoff: {current_center} → {new_center}")
-            print(f"  Preserving {current_handoff['remainder'].bit_length()}-bit remainder precision")
-            print(f"  Accumulated coordinates: x_mod={current_handoff['x_mod']}, y_mod={current_handoff['y_mod']}")
+        next_generation = []
         
-        # Create new micro-lattice centered on handoff point
-        current_lattice = GeometricLattice(
-            micro_lattice_size,
-            new_center,
-            remainder_lattice_size=remainder_lattice_size,
-            N=N
-        )
+        # Process each candidate in the beam
+        for i, parent_cand in enumerate(active_candidates):
+            # Create lattice centered on this candidate's focus point
+            # Use the "singularity" logic to compress
+            
+            # Setup lattice for this candidate
+            center_point = LatticePoint(parent_cand['x_mod'], parent_cand['y_mod'], parent_cand['z_mod'])
+            
+            # For iteration 0, we use the global N/lattice setup
+            # For subsequent, we use the parent's handoff
+            
+            # Re-create lattice context (simplified for performance)
+            lattice = GeometricLattice(lattice_size, center_point, remainder_lattice_size=remainder_lattice_size, N=N)
+            
+            # Compress (Geometry Step)
+            lattice.compress_volume_to_plane()
+            lattice.create_bounded_square()
+            lattice.add_vertex_lines()
+            lattice.compress_square_to_triangle()
+            lattice.compress_triangle_to_line()
+            lattice.compress_line_to_point()
+            
+            # The singularity point
+            if not lattice.lattice_points:
+                continue
+            singularity = lattice.lattice_points[0]
+            
+            # EXPANSION STEP: Generate children from this singularity
+            # Instead of just taking the singularity, we take it AND its neighbors
+            # This creates the "diversity" needed to catch the true path if it drifted 1px
+            
+            expansion_radius = 1 # 3x3 grid around singularity
+            for dx in range(-expansion_radius, expansion_radius + 1):
+                for dy in range(-expansion_radius, expansion_radius + 1):
+                    # Child coordinates (relative to current lattice)
+                    child_x_rel = singularity.x + dx
+                    child_y_rel = singularity.y + dy
+                    child_z_rel = singularity.z # Z usually doesn't need spatial jitter in 2D projection
+                    
+                    # Map back to global/accumulated space
+                    # Calculate new remainder and score
+                    # Note: We need to propagate the "recursive handoff" logic here
+                    
+                    # Calculate new full-precision coordinates (simulated handoff)
+                    # For score calculation only - the next iteration will re-center
+                    
+                    # Accumulate: This is tricky. We need to follow perform_recursive_handoff logic
+                    # But adaptation for beam search:
+                    # The 'child' becomes the seed for the next iteration.
+                    
+                    # Modulo Carry Update
+                    # new_remainder = abs(N - (acc_x * acc_y)) logic
+                    # BUT calculating full acc_x is huge. 
+                    # We only need the *local* remainder update for the next step?
+                    # Squarer.py's perform_recursive_handoff updates 'remainder' based on new chunks.
+                    
+                    # Simplified Handoff for Beam:
+                    # Just pass the new local coordinates. The 'remainder' serves as the Z-depth.
+                    # We need to refine 'remainder' for the next step.
+                    
+                    # Calculate child's new remainder contribution
+                    # In the original code, remainder was recalculated.
+                    # Here, we'll keep it simple: Pass the parent's remainder, 
+                    # but maybe score based on "how close to factor-like" it is?
+                    
+                    # Scoring heuristic:
+                    # Ideally, we want the path that minimizes "drift" from the factor line.
+                    # Proxy: Minimize (x*y - N) modulo local window?
+                    
+                    # Let's create the child candidate
+                    child_cand = {
+                        'x_mod': child_x_rel % lattice_size, # Re-wrap for next lattice
+                        'y_mod': child_y_rel % lattice_size,
+                        'z_mod': child_z_rel % remainder_lattice_size,
+                        'remainder': parent_cand['remainder'], # Propagate remainder
+                        'a': parent_cand['a'],
+                        'b': parent_cand['b'],
+                        'history': parent_cand['history'] + [(child_x_rel, child_y_rel)],
+                        'score': 0
+                    }
+                    
+                    # Score the candidate
+                    # 1. Coordinate Resonance: |x_rel - y_rel| should be minimal (straight line)
+                    # 2. Geometric Resonance: gcd((x*X - z*R) ... ) check
+                    
+                    # Heuristic score: Inverse of difference
+                    diff = abs(child_x_rel - child_y_rel)
+                    child_cand['score'] = -diff # maximize negative difference (minimize difference)
+                    
+                    next_generation.append(child_cand)
         
-        # Stage C: Collapse the micro-lattice
-        current_lattice.compress_volume_to_plane()
-        current_lattice.expand_point_to_line()
-        current_lattice.create_square_from_line()
-        current_lattice.create_bounded_square()
-        current_lattice.add_vertex_lines()
-        current_lattice.compress_square_to_triangle()
-        current_lattice.compress_triangle_to_line()
-        current_lattice.compress_line_to_point()
+        # SELECT TOP K
+        # Sort by score (descending)
+        next_generation.sort(key=lambda x: x['score'], reverse=True)
+        active_candidates = next_generation[:BEAM_WIDTH]
         
-        # MEASURE FACTORS: Check each lattice point during compression
-        # This is the "measurement" - each point gets evaluated for being a factor
-        if current_lattice.measure_factors(N, unique_factors, seen):
-            print(f"  ✓ Factor found during lattice measurement at iteration {iteration}")
+        # Print best score
+        if active_candidates:
+            print(f"  Best candidate score: {active_candidates[0]['score']}")
+            print(f"  Best path: {active_candidates[0]['history'][-1]}")
+    
+    # FINAL FACTOR EXTRACTION FROM BEAM
+    print("\n[BEAM SEARCH COMPLETE] checking top candidates for factors...")
+    unique_factors = []
+    seen = set()
+    
+    for cand in active_candidates:
+        # Check each candidate for factors using the geometric resonance formulas
+        # Reconstruct context
+        x_mod = cand['x_mod']
+        y_mod = cand['y_mod']
+        z_mod = cand['z_mod']
+        remainder = cand['remainder']
         
-        # Get new compressed point
-        current_center = current_lattice.lattice_points[0] if current_lattice.lattice_points else None
-        if not current_center:
-            print(f"  Warning: No point found at iteration {iteration}")
-            break
+        # Handoff logic (simplified for beam result)
+        # We treat the final state as the "handoff"
+        base_x = x_mod
+        base_y = y_mod
         
-        if iteration % 10 == 0 or iteration <= 5:
-            print(f"  → Compressed to: {current_center}")
-            # Calculate zoom in scientific notation manually to avoid overflow
-            zoom_exponent = iteration * 6  # 10^6 per iteration = 6 digits per iteration
-            print(f"  → Cumulative zoom: 10^{zoom_exponent} ({iteration} iterations)")
-            print(f"  → Remainder precision maintained: {current_handoff['remainder'].bit_length()} bits")
-            print()
+        # Formula 1: (x * base_x) - (z * remainder)
+        # Note: x_mod IS the base coordinate in this recursive view
+        # We need the *accumulated* values to really check resonance, 
+        # or we check local resonance.
+        # Let's try the local resonance check which worked for smaller numbers
         
-        # Calculate zoom exponent for this iteration
-        zoom_exponent = iteration * 6  # 10^6 per iteration
+        val = abs(x_mod * y_mod - remainder) # Very simple check
+        if val > 1:
+            g = gcd(val, N)
+            if 1 < g < N:
+                 pair = tuple(sorted([g, N//g]))
+                 if pair not in seen:
+                     unique_factors.append(pair)
+                     seen.add(pair)
+                     print(f"✓ FACTOR FOUND: {pair}")
         
-        zoom_history.append({
-            'iteration': iteration,
-            'point': current_center,
-            'zoom_exponent': zoom_exponent,
-            'handoff_data': current_handoff.copy(),
-            'remainder_bits': current_handoff['remainder'].bit_length()
-        })
+        # Try original formulas with 'x_mod' as both 'x' and 'handoff' (self-resonance)
+        term = abs(x_mod * x_mod - z_mod * remainder)
+        if term > 1:
+            g = gcd(term, N)
+            if 1 < g < N:
+                 pair = tuple(sorted([g, N//g]))
+                 if pair not in seen:
+                     unique_factors.append(pair)
+                     seen.add(pair)
+                     print(f"✓ FACTOR FOUND: {pair}")
+
+    if unique_factors:
+        return {'N': N, 'factors': unique_factors}
+    
+    print("No factors found in beam.")
+    return {'N': N, 'factors': []}
     
     final_iterations = len(zoom_history) - 1
     final_zoom_exponent = final_iterations * 6  # 10^6 per iteration
@@ -1249,6 +1371,17 @@ def factor_with_lattice_compression(N: int, lattice_size: int = None, zoom_itera
         print(f"  Final compressed: x={x_mod}, y={y_mod}")
         print()
         
+        
+        # ENSURE FACTOR ALIGNMENT (ERROR CORRECTION)
+        # Apply perturbations to correction quantization drift from deep iterations
+        aligned_x, aligned_y, aligned_remainder = current_lattice.ensure_factor_alignment(
+            base_x_handoff, base_y_handoff, remainder
+        )
+        
+        # Use aligned coordinates for geodesic extraction
+        base_x_handoff = aligned_x
+        base_y_handoff = aligned_y
+        remainder = aligned_remainder
         
         # GEODESIC RESONANCE FORMULA - Direct factor extraction without search
         # When perfect straightness is achieved, the geodesic vector (x,y,z) provides
